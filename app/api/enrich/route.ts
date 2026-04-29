@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import path from "node:path";
 import fs from "node:fs";
 
-const PRIMARY_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const PRIMARY_MODEL = "gemini-2.5-flash";
 const FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.0-flash-001"];
 const SAUDI_DB_FILE = "saudidatabase.xlsx";
 
@@ -46,7 +46,7 @@ async function fetchImageFromSerpApi(
   query: string,
   overrideKey?: string
 ): Promise<{ image_url: string; image_format: string }> {
-  const key = overrideKey || process.env.SERPAPI_API_KEY || process.env.SERP_API_KEY;
+  const key = overrideKey;
   if (!key) {
     return { image_url: "Unknown", image_format: "Unknown" };
   }
@@ -237,10 +237,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing 'sku' in request body." }, { status: 400 });
     }
 
-    const apiKey = geminiApiKey || process.env.GEMINI_API_KEY;
+    const apiKey = geminiApiKey;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "Missing Gemini API key. Set it in UI or GEMINI_API_KEY in environment." },
+        { error: "Missing Gemini API key. Set it in UI." },
         { status: 500 }
       );
     }

@@ -52,24 +52,6 @@ export default function Page() {
   const [rows, setRows] = useState<PartRow[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [geminiApiKey, setGeminiApiKey] = useState("");
-  const [serpApiKey, setSerpApiKey] = useState("");
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    setGeminiApiKey(localStorage.getItem("gemini_api_key") || "");
-    setSerpApiKey(localStorage.getItem("serpapi_api_key") || "");
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem("gemini_api_key", geminiApiKey);
-  }, [geminiApiKey]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem("serpapi_api_key", serpApiKey);
-  }, [serpApiKey]);
 
   const doneCount = useMemo(() => rows.filter((r) => r.status === "done").length, [rows]);
   const failedCount = useMemo(() => rows.filter((r) => r.status === "failed").length, [rows]);
@@ -158,8 +140,6 @@ export default function Page() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             sku,
-            gemini_api_key: geminiApiKey.trim(),
-            serpapi_api_key: serpApiKey.trim(),
           }),
         });
 
@@ -199,7 +179,7 @@ export default function Page() {
     }
 
     setIsProcessing(false);
-  }, [rows, geminiApiKey, serpApiKey]);
+  }, [rows]);
 
   const exportExcel = useCallback(() => {
     const data = rows.map(({ status, error, ...rest }) => ({ ...rest, status, error: error ?? "" }));
@@ -284,31 +264,6 @@ export default function Page() {
         </section>
 
         <section className="rounded-2xl border border-zinc-700 bg-black/50 p-4 md:p-6">
-          <div className="mb-4 grid gap-3 md:grid-cols-2">
-            <label className="text-sm text-red-200">
-              Gemini API Key
-              <input
-                type="password"
-                className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-red-100"
-                value={geminiApiKey}
-                onChange={(e) => setGeminiApiKey(e.target.value)}
-                placeholder="AI..."
-                autoComplete="off"
-              />
-            </label>
-            <label className="text-sm text-red-200">
-              SerpApi Key
-              <input
-                type="password"
-                className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-red-100"
-                value={serpApiKey}
-                onChange={(e) => setSerpApiKey(e.target.value)}
-                placeholder="..."
-                autoComplete="off"
-              />
-            </label>
-          </div>
-
           <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="text-sm text-red-200">
               Total: <span className="font-semibold text-red-100">{rows.length}</span> | Done:{" "}
