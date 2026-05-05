@@ -230,22 +230,21 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const sku = String(body?.sku ?? "").trim();
-    const geminiApiKey = String(body?.gemini_api_key ?? "").trim();
-    const serpApiKey = String(body?.serpapi_api_key ?? "").trim();
+    const geminiApiKey = String(process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "").trim();
+    const serpApiKey = String(process.env.SERPAPI_API_KEY ?? "").trim();
 
     if (!sku) {
       return NextResponse.json({ error: "Missing 'sku' in request body." }, { status: 400 });
     }
 
-    const apiKey = geminiApiKey;
-    if (!apiKey) {
+    if (!geminiApiKey) {
       return NextResponse.json(
-        { error: "Missing Gemini API key. Set it in UI." },
+        { error: "Missing Gemini API key. Set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env.local / Vercel env." },
         { status: 500 }
       );
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
+    const genAI = new GoogleGenerativeAI(geminiApiKey);
     const modelsToTry = Array.from(new Set([PRIMARY_MODEL, ...FALLBACK_MODELS]));
 
     const prompt = `
