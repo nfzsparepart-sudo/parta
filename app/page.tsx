@@ -189,6 +189,27 @@ export default function Page() {
     XLSX.writeFile(wb, "enriched_spare_parts.xlsx");
   }, [rows]);
 
+  const exportExcelWithMergedVehicle = useCallback(() => {
+    const data = rows.map(({ status, error, ...rest }) => {
+      const vehicleMerged = [rest.vehicle_brand, rest.vehicle_model, rest.vehicle_year]
+        .map((v) => String(v ?? "").trim())
+        .filter(Boolean)
+        .join(" ");
+
+      return {
+        ...rest,
+        vehicle_brand_model_year: vehicleMerged,
+        status,
+        error: error ?? "",
+      };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Enriched Parts");
+    XLSX.writeFile(wb, "enriched_spare_parts_with_vehicle_column.xlsx");
+  }, [rows]);
+
   const onDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
@@ -288,6 +309,15 @@ export default function Page() {
               >
                 <Download className="h-4 w-4" />
                 Export Excel
+              </button>
+
+              <button
+                onClick={exportExcelWithMergedVehicle}
+                disabled={!allProcessed}
+                className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Download className="h-4 w-4" />
+                Export + Merged Vehicle
               </button>
             </div>
           </div>
