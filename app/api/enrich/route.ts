@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 
 const PRIMARY_MODEL = "gemini-2.5-flash";
-const FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.0-flash-001"];
+const FALLBACK_MODELS = ["gemini-flash-latest", "gemini-1.5-flash"];
 const SAUDI_DB_FILE = "saudidatabase.xlsx";
 
 type EnrichedPart = {
@@ -297,7 +297,16 @@ Rules:
         raw = result.response.text();
         if (raw.trim()) break;
       } catch (e) {
-        lastError = e;
+        const message = String((e as { message?: string })?.message ?? "").toLowerCase();
+        const isDeprecatedModelError =
+          message.includes("no longer available to new users") ||
+          message.includes("not found") ||
+          message.includes("404");
+
+        if (!isDeprecatedModelError) {
+          lastError = e;
+        }
+
         const status = (e as { status?: number })?.status;
         if (status === 503) {
           await sleep(1500);
@@ -308,7 +317,7 @@ Rules:
     }
 
     if (!raw.trim()) {
-      throw lastError || new Error("No response generated from available Gemini models.");
+      throw lastError || new Error(`No response generated from available Gemini models: ${modelsToTry.join(", ")}`);
     }
 
     const parsed = extractJsonObject(raw);
