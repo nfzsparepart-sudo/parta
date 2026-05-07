@@ -46,6 +46,7 @@ async function fetchImageFromSerpApi(
   query: string,
   overrideKey?: string
 ): Promise<{ image_url: string; image_format: string }> {
+  const allowedFormats = new Set(["jpg", "jpeg", "png"]);
   const key = overrideKey;
   if (!key) {
     return { image_url: "Unknown", image_format: "Unknown" };
@@ -55,7 +56,7 @@ async function fetchImageFromSerpApi(
   endpoint.searchParams.set("engine", "google_images");
   endpoint.searchParams.set("api_key", key);
   endpoint.searchParams.set("q", query);
-  endpoint.searchParams.set("num", "1");
+  endpoint.searchParams.set("num", "10");
   endpoint.searchParams.set("hl", "en");
   endpoint.searchParams.set("gl", "us");
 
@@ -66,38 +67,47 @@ async function fetchImageFromSerpApi(
     }
 
     const payload = (await res.json()) as Record<string, unknown>;
-    const first = Array.isArray(payload.images_results)
-      ? (payload.images_results[0] as Record<string, unknown> | undefined)
-      : undefined;
-
-    if (!first) {
+    const results = Array.isArray(payload.images_results)
+      ? (payload.images_results as Record<string, unknown>[])
+      : [];
+    if (!results.length) {
       return { image_url: "Unknown", image_format: "Unknown" };
     }
+    for (const item of results) {
+      const rawUrl =
+        item.original ??
+        item.image ??
+        item.url ??
+        item.thumbnail ??
+        item.source ??
+        item.link;
+      const imageUrl = String(rawUrl ?? "").trim();
+      if (!imageUrl) continue;
 
-    const rawUrl =
-      first.original ??
-      first.image ??
-      first.url ??
-      first.thumbnail ??
-      first.source ??
-      first.link;
-    const imageUrl = String(rawUrl ?? "").trim();
+      let parsed: URL;
+      try {
+        parsed = new URL(imageUrl);
+      } catch {
+        continue;
+      }
 
-    if (!imageUrl) {
-      return { image_url: "Unknown", image_format: "Unknown" };
+      const byPath = parsed.pathname.match(/\.([a-zA-Z0-9]{2,5})$/)?.[1]?.toLowerCase();
+      const byParam =
+        parsed.searchParams.get("format")?.toLowerCase() ||
+        parsed.searchParams.get("fm")?.toLowerCase() ||
+        "";
+      const format = byPath || byParam || "unknown";
+      if (!allowedFormats.has(format)) continue;
+
+      return {
+        image_url: imageUrl,
+        image_format: format.toUpperCase(),
+      };
     }
-
-    const parsed = new URL(imageUrl);
-    const byPath = parsed.pathname.match(/\.([a-zA-Z0-9]{2,5})$/)?.[1]?.toLowerCase();
-    const byParam =
-      parsed.searchParams.get("format")?.toLowerCase() ||
-      parsed.searchParams.get("fm")?.toLowerCase() ||
-      "";
-    const format = byPath || byParam || "unknown";
 
     return {
-      image_url: imageUrl,
-      image_format: format.toUpperCase(),
+      image_url: "Unknown",
+      image_format: "Unknown",
     };
   } catch {
     return { image_url: "Unknown", image_format: "Unknown" };
