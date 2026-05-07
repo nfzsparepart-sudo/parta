@@ -7,6 +7,10 @@ import fs from "node:fs";
 const PRIMARY_MODEL = "gemini-2.5-flash";
 const FALLBACK_MODELS = ["gemini-flash-latest", "gemini-1.5-flash"];
 const SAUDI_DB_FILE = "saudidatabase.xlsx";
+const DEFAULT_GEMINI_TIMEOUT_MS = 45_000;
+const DEFAULT_GEMINI_MAX_RETRIES = 4;
+const DEFAULT_GEMINI_INITIAL_BACKOFF_MS = 1_000;
+const DEFAULT_GEMINI_MAX_BACKOFF_MS = 15_000;
 
 type EnrichedPart = {
   sku: string;
@@ -129,6 +133,36 @@ function extractJsonObject(raw: string): unknown {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseEnvInt(value: string | undefined, fallback: number, min = 1): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.floor(n));
+}
+
+function isRetryableStatus(status: number | undefined): boolean {
+  if (!status) return false;
+  if (status === 429 || status === 503) return true;
+  return status >= 500 && status <= 599;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const id = setTimeout(() => {
+      reject(new Error(`Gemini request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    promise
+      .then((value) => {
+        clearTimeout(id);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(id);
+        reject(error);
+      });
+  });
 }
 
 let saudiColloquialMapCache: Map<string, string> | null = null;
@@ -256,6 +290,13 @@ export async function POST(req: NextRequest) {
 
     const genAI = new GoogleGenerativeAI(geminiApiKey);
     const modelsToTry = Array.from(new Set([PRIMARY_MODEL, ...FALLBACK_MODELS]));
+    const timeoutMs = parseEnvInt(process.env.GEMINI_TIMEOUT_MS, DEFAULT_GEMINI_TIMEOUT_MS);
+    const maxRetries = parseEnvInt(process.env.GEMINI_MAX_RETRIES, DEFAULT_GEMINI_MAX_RETRIES);
+    const initialBackoffMs = parseEnvInt(
+      process.env.GEMINI_INITIAL_BACKOFF_MS,
+      DEFAULT_GEMINI_INITIAL_BACKOFF_MS
+    );
+    const maxBackoffMs = parseEnvInt(process.env.GEMINI_MAX_BACKOFF_MS, DEFAULT_GEMINI_MAX_BACKOFF_MS);
 
     const prompt = `
 You are an automotive parts data enrichment expert.
@@ -289,41 +330,44 @@ Rules:
 `;
 
     let raw = "";
+    let totalRetriesUsed = 0;
     let lastError: unknown = null;
 
     for (const modelName of modelsToTry) {
       const model = genAI.getGenerativeModel({ model: modelName });
-      try {
-        const requestPayload: any = {
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.2,
-          },
-          tools: [{ googleSearch: {} }],
-        };
+      const requestPayload: any = {
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.2,
+        },
+        tools: [{ googleSearch: {} }],
+      };
 
-        const result = await model.generateContent(requestPayload);
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          const result = await withTimeout(model.generateContent(requestPayload), timeoutMs);
+          raw = result.response.text();
+          if (raw.trim()) break;
+          throw new Error("Gemini returned empty response text.");
+        } catch (e) {
+          const message = String((e as { message?: string })?.message ?? "").toLowerCase();
+          const status = (e as { status?: number })?.status;
+          const isDeprecatedModelError =
+            message.includes("no longer available to new users") ||
+            message.includes("not found") ||
+            message.includes("404");
+          const retryable = isRetryableStatus(status) || message.includes("timed out");
 
-        raw = result.response.text();
-        if (raw.trim()) break;
-      } catch (e) {
-        const message = String((e as { message?: string })?.message ?? "").toLowerCase();
-        const isDeprecatedModelError =
-          message.includes("no longer available to new users") ||
-          message.includes("not found") ||
-          message.includes("404");
+          if (!isDeprecatedModelError) lastError = e;
+          if (!retryable || attempt === maxRetries) break;
 
-        if (!isDeprecatedModelError) {
-          lastError = e;
+          const capped = Math.min(initialBackoffMs * 2 ** attempt, maxBackoffMs);
+          const jitter = Math.floor(Math.random() * 500);
+          totalRetriesUsed += 1;
+          await sleep(capped + jitter);
         }
-
-        const status = (e as { status?: number })?.status;
-        if (status === 503) {
-          await sleep(1500);
-          continue;
-        }
-        continue;
       }
+      if (raw.trim()) break;
     }
 
     if (!raw.trim()) {
@@ -347,6 +391,7 @@ Rules:
       name_ar_colloquial: resolvedColloquial,
       image_url: imageData.image_url,
       image_format: imageData.image_format,
+      retryCount: totalRetriesUsed,
     });
   } catch (error) {
     console.error("/api/enrich error:", error);

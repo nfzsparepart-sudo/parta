@@ -25,6 +25,8 @@ type EnrichedPart = {
 type PartRow = EnrichedPart & {
   status: RowStatus;
   error?: string;
+  retry_count?: number;
+  error_code?: string;
 };
 
 const EMPTY_ENRICHED: Omit<EnrichedPart, "sku"> = {
@@ -47,6 +49,8 @@ const STATUS_STYLES: Record<RowStatus, string> = {
   done: "bg-red-800 text-red-100",
   failed: "bg-black text-red-300",
 };
+
+const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_GEMINI ?? "8") || 8);
 
 export default function Page() {
   const [rows, setRows] = useState<PartRow[]>([]);
@@ -118,66 +122,83 @@ export default function Page() {
 
   const processRows = useCallback(async () => {
     setIsProcessing(true);
+    const queue = rows.map((row, index) => ({ sku: row.sku, index }));
+    let cursor = 0;
 
-    for (let i = 0; i < rows.length; i++) {
-      const sku = rows[i].sku;
+    const worker = async () => {
+      while (true) {
+        const current = cursor;
+        cursor += 1;
+        if (current >= queue.length) return;
 
-      setRows((prev) =>
-        prev.map((r, idx) =>
-          idx === i
-            ? {
-                ...r,
-                status: "searching",
-                error: undefined,
-              }
-            : r
-        )
-      );
-
-      try {
-        const res = await fetch("/api/enrich", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sku,
-          }),
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-          throw new Error(data?.error || "Enrichment failed.");
-        }
+        const { sku, index } = queue[current];
 
         setRows((prev) =>
           prev.map((r, idx) =>
-            idx === i
+            idx === index
               ? {
                   ...r,
-                  ...data,
-                  status: "done",
+                  status: "searching",
                   error: undefined,
+                  retry_count: undefined,
+                  error_code: undefined,
                 }
               : r
           )
         );
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Unknown error";
 
-        setRows((prev) =>
-          prev.map((r, idx) =>
-            idx === i
-              ? {
-                  ...r,
-                  status: "failed",
-                  error: message,
-                }
-              : r
-          )
-        );
+        try {
+          const res = await fetch("/api/enrich", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sku }),
+          });
+
+          const data = await res.json();
+
+          if (!res.ok) {
+            const providerStatus = data?.providerStatus ? String(data.providerStatus) : "";
+            const msg = data?.error || "Enrichment failed.";
+            throw new Error(providerStatus ? `${msg} (provider status: ${providerStatus})` : msg);
+          }
+
+          setRows((prev) =>
+            prev.map((r, idx) =>
+              idx === index
+                ? {
+                    ...r,
+                    ...data,
+                    status: "done",
+                    error: undefined,
+                    retry_count: Number(data?.retryCount ?? 0),
+                    error_code: undefined,
+                  }
+                : r
+            )
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Unknown error";
+          const codeMatch = message.match(/provider status:\s*(\d+)/i);
+          const errorCode = codeMatch ? codeMatch[1] : undefined;
+
+          setRows((prev) =>
+            prev.map((r, idx) =>
+              idx === index
+                ? {
+                    ...r,
+                    status: "failed",
+                    error: message,
+                    error_code: errorCode,
+                  }
+                : r
+            )
+          );
+        }
       }
-    }
+    };
 
+    const workerCount = Math.min(MAX_CONCURRENT_REQUESTS, queue.length || 1);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
     setIsProcessing(false);
   }, [rows]);
 
