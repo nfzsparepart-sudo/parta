@@ -147,6 +147,32 @@ function isRetryableStatus(status: number | undefined): boolean {
   return status >= 500 && status <= 599;
 }
 
+function formatProviderError(error: unknown): { message: string; status: number } {
+  const anyErr = error as {
+    message?: string;
+    status?: number;
+    statusText?: string;
+  };
+  const rawMessage = String(anyErr?.message ?? "Failed to enrich SKU.");
+  const status = typeof anyErr?.status === "number" && anyErr.status >= 400 ? anyErr.status : 500;
+  const lower = rawMessage.toLowerCase();
+
+  if (
+    status === 429 ||
+    lower.includes("429") ||
+    lower.includes("too many requests") ||
+    lower.includes("exceeded your current quota")
+  ) {
+    return {
+      status: 429,
+      message:
+        "Gemini quota/rate limit reached (429). The app retried automatically but no capacity was available. Check plan/billing and quota usage at https://ai.dev/rate-limit and https://ai.google.dev/gemini-api/docs/rate-limits, then retry.",
+    };
+  }
+
+  return { message: rawMessage, status };
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const id = setTimeout(() => {
@@ -401,18 +427,16 @@ Rules:
       statusText?: string;
       errorDetails?: unknown;
     };
-
-    const status = typeof anyErr?.status === "number" && anyErr.status >= 400 ? anyErr.status : 500;
-    const details = anyErr?.message || "Failed to enrich SKU.";
+    const normalized = formatProviderError(error);
 
     return NextResponse.json(
       {
-        error: details,
+        error: normalized.message,
         providerStatus: anyErr?.status || null,
         providerStatusText: anyErr?.statusText || null,
         providerDetails: anyErr?.errorDetails || null,
       },
-      { status }
+      { status: normalized.status }
     );
   }
 }

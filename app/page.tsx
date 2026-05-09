@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { Download, FileSpreadsheet, Loader2, UploadCloud } from "lucide-react";
@@ -56,6 +56,9 @@ export default function Page() {
   const [rows, setRows] = useState<PartRow[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
+  const abortControllersRef = useRef<Set<AbortController>>(new Set());
+  const stopRequestedRef = useRef(false);
 
   const doneCount = useMemo(() => rows.filter((r) => r.status === "done").length, [rows]);
   const failedCount = useMemo(() => rows.filter((r) => r.status === "failed").length, [rows]);
@@ -121,12 +124,15 @@ export default function Page() {
   }, []);
 
   const processRows = useCallback(async () => {
+    stopRequestedRef.current = false;
+    setIsStopping(false);
     setIsProcessing(true);
     const queue = rows.map((row, index) => ({ sku: row.sku, index }));
     let cursor = 0;
 
     const worker = async () => {
       while (true) {
+        if (stopRequestedRef.current) return;
         const current = cursor;
         cursor += 1;
         if (current >= queue.length) return;
@@ -148,10 +154,15 @@ export default function Page() {
         );
 
         try {
+          const controller = new AbortController();
+          abortControllersRef.current.add(controller);
           const res = await fetch("/api/enrich", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ sku }),
+            signal: controller.signal,
+          }).finally(() => {
+            abortControllersRef.current.delete(controller);
           });
 
           const data = await res.json();
@@ -177,6 +188,22 @@ export default function Page() {
             )
           );
         } catch (err) {
+          if (err instanceof DOMException && err.name === "AbortError") {
+            setRows((prev) =>
+              prev.map((r, idx) =>
+                idx === index
+                  ? {
+                      ...r,
+                      status: "pending",
+                      error: "Stopped by user.",
+                      error_code: "aborted",
+                    }
+                  : r
+              )
+            );
+            return;
+          }
+
           const message = err instanceof Error ? err.message : "Unknown error";
           const codeMatch = message.match(/provider status:\s*(\d+)/i);
           const errorCode = codeMatch ? codeMatch[1] : undefined;
@@ -199,8 +226,17 @@ export default function Page() {
 
     const workerCount = Math.min(MAX_CONCURRENT_REQUESTS, queue.length || 1);
     await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    abortControllersRef.current.clear();
+    setIsStopping(false);
     setIsProcessing(false);
   }, [rows]);
+
+  const stopProcessing = useCallback(() => {
+    stopRequestedRef.current = true;
+    setIsStopping(true);
+    abortControllersRef.current.forEach((controller) => controller.abort());
+    abortControllersRef.current.clear();
+  }, []);
 
   const exportExcel = useCallback(() => {
     const data = rows.map(({ status, error, ...rest }) => ({ ...rest, status, error: error ?? "" }));
@@ -321,6 +357,14 @@ export default function Page() {
               >
                 {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {isProcessing ? "Processing..." : "Start Enrichment"}
+              </button>
+
+              <button
+                onClick={stopProcessing}
+                disabled={!isProcessing}
+                className="inline-flex items-center gap-2 rounded-xl bg-zinc-800 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isStopping ? "Stopping..." : "Stop"}
               </button>
 
               <button
