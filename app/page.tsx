@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { Download, FileSpreadsheet, Loader2, UploadCloud } from "lucide-react";
@@ -59,12 +59,22 @@ type InputRow = {
   sku: string;
   price: string;
 };
+type SavedSession = {
+  id: string;
+  name: string;
+  createdAt: string;
+  rows: PartRow[];
+};
+
+const DRAFT_STORAGE_KEY = "nfzalik_draft_rows_v1";
+const SESSIONS_STORAGE_KEY = "nfzalik_saved_sessions_v1";
 
 export default function Page() {
   const [rows, setRows] = useState<PartRow[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [savedSessions, setSavedSessions] = useState<SavedSession[]>([]);
   const abortControllersRef = useRef<Set<AbortController>>(new Set());
   const stopRequestedRef = useRef(false);
 
@@ -73,6 +83,41 @@ export default function Page() {
   const allProcessed = rows.length > 0 && rows.every((r) => r.status === "done" || r.status === "failed");
 
   const normalizeSku = (value: unknown) => String(value ?? "").trim();
+
+  useEffect(() => {
+    try {
+      const draftRaw = localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (draftRaw) {
+        const parsed = JSON.parse(draftRaw) as PartRow[];
+        if (Array.isArray(parsed) && parsed.length) setRows(parsed);
+      }
+
+      const sessionsRaw = localStorage.getItem(SESSIONS_STORAGE_KEY);
+      if (sessionsRaw) {
+        const parsed = JSON.parse(sessionsRaw) as SavedSession[];
+        if (Array.isArray(parsed)) setSavedSessions(parsed);
+      }
+    } catch {
+      // Ignore invalid persisted storage
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(rows));
+    } catch {
+      // Ignore storage failures
+    }
+  }, [rows]);
+
+  const persistSessions = useCallback((next: SavedSession[]) => {
+    setSavedSessions(next);
+    try {
+      localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Ignore storage failures
+    }
+  }, []);
 
   const normalizePrice = (value: unknown) => String(value ?? "").trim();
 
@@ -298,6 +343,28 @@ export default function Page() {
     XLSX.writeFile(wb, "enriched_spare_parts_with_vehicle_column.xlsx");
   }, [rows]);
 
+  const saveCurrentSession = useCallback(() => {
+    if (!rows.length) return;
+    const now = new Date();
+    const session: SavedSession = {
+      id: `${now.getTime()}`,
+      name: `Session ${now.toLocaleString()}`,
+      createdAt: now.toISOString(),
+      rows,
+    };
+    persistSessions([session, ...savedSessions]);
+  }, [persistSessions, rows, savedSessions]);
+
+  const loadSession = useCallback((id: string) => {
+    const selected = savedSessions.find((s) => s.id === id);
+    if (!selected) return;
+    setRows(selected.rows);
+  }, [savedSessions]);
+
+  const deleteSession = useCallback((id: string) => {
+    persistSessions(savedSessions.filter((s) => s.id !== id));
+  }, [persistSessions, savedSessions]);
+
   const onDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
@@ -415,6 +482,14 @@ export default function Page() {
                 <Download className="h-4 w-4" />
                 Export + Merged Vehicle
               </button>
+
+              <button
+                onClick={saveCurrentSession}
+                disabled={!rows.length}
+                className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Save Output
+              </button>
             </div>
           </div>
 
@@ -502,6 +577,38 @@ export default function Page() {
               </tbody>
             </table>
           </div>
+        </section>
+
+        <section className="rounded-2xl border border-zinc-700 bg-black/50 p-4 md:p-6">
+          <h2 className="mb-3 text-lg font-semibold text-red-100">Saved Outputs</h2>
+          {!savedSessions.length ? (
+            <p className="text-sm text-red-300">No saved outputs yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {savedSessions.map((session) => (
+                <div key={session.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-700 bg-zinc-900/40 p-3">
+                  <div>
+                    <p className="text-sm font-medium text-red-100">{session.name}</p>
+                    <p className="text-xs text-red-300">{new Date(session.createdAt).toLocaleString()} | Rows: {session.rows.length}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => loadSession(session.id)}
+                      className="rounded-lg bg-red-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600"
+                    >
+                      Load
+                    </button>
+                    <button
+                      onClick={() => deleteSession(session.id)}
+                      className="rounded-lg bg-zinc-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-600"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       </div>
     </main>
