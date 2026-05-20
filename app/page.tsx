@@ -9,6 +9,7 @@ type RowStatus = "pending" | "searching" | "done" | "failed";
 
 type EnrichedPart = {
   sku: string;
+  price: string;
   name_en: string;
   name_ar: string;
   name_ar_colloquial: string;
@@ -30,6 +31,7 @@ type PartRow = EnrichedPart & {
 };
 
 const EMPTY_ENRICHED: Omit<EnrichedPart, "sku"> = {
+  price: "",
   name_en: "",
   name_ar: "",
   name_ar_colloquial: "",
@@ -51,6 +53,12 @@ const STATUS_STYLES: Record<RowStatus, string> = {
 };
 
 const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_GEMINI ?? "8") || 8);
+const PRICE_COLUMN_CANDIDATES = ["price", "part_price", "unit_price", "selling_price", "cost", "amount"];
+
+type InputRow = {
+  sku: string;
+  price: string;
+};
 
 export default function Page() {
   const [rows, setRows] = useState<PartRow[]>([]);
@@ -66,7 +74,9 @@ export default function Page() {
 
   const normalizeSku = (value: unknown) => String(value ?? "").trim();
 
-  const parseCsvWithPapa = (text: string): string[] => {
+  const normalizePrice = (value: unknown) => String(value ?? "").trim();
+
+  const parseCsvWithPapa = (text: string): InputRow[] => {
     const parsed = Papa.parse<Record<string, unknown>>(text, {
       header: true,
       skipEmptyLines: true,
@@ -78,11 +88,18 @@ export default function Page() {
     }
 
     return parsed.data
-      .map((r) => normalizeSku(r.sku))
-      .filter(Boolean);
+      .map((r) => {
+        const sku = normalizeSku(r.sku);
+        if (!sku) return null;
+
+        const priceKey = Object.keys(r).find((k) => PRICE_COLUMN_CANDIDATES.includes(k.trim().toLowerCase()));
+        const price = priceKey ? normalizePrice(r[priceKey]) : "";
+        return { sku, price };
+      })
+      .filter((row): row is InputRow => Boolean(row));
   };
 
-  const parseExcelWithXlsx = (arrayBuffer: ArrayBuffer): string[] => {
+  const parseExcelWithXlsx = (arrayBuffer: ArrayBuffer): InputRow[] => {
     const workbook = XLSX.read(arrayBuffer, { type: "array" });
     const firstSheetName = workbook.SheetNames[0];
     if (!firstSheetName) return [];
@@ -94,33 +111,46 @@ export default function Page() {
 
     return data
       .map((r) => {
-        const matchedKey = Object.keys(r).find((k) => k.trim().toLowerCase() === "sku");
-        return matchedKey ? normalizeSku(r[matchedKey]) : "";
+        const skuKey = Object.keys(r).find((k) => k.trim().toLowerCase() === "sku");
+        const sku = skuKey ? normalizeSku(r[skuKey]) : "";
+        if (!sku) return null;
+
+        const priceKey = Object.keys(r).find((k) => PRICE_COLUMN_CANDIDATES.includes(k.trim().toLowerCase()));
+        const price = priceKey ? normalizePrice(r[priceKey]) : "";
+        return { sku, price };
       })
-      .filter(Boolean);
+      .filter((row): row is InputRow => Boolean(row));
   };
 
   const handleFile = useCallback(async (file: File) => {
     const lower = file.name.toLowerCase();
-    let skus: string[] = [];
+    let inputRows: InputRow[] = [];
 
     if (lower.endsWith(".csv")) {
       const text = await file.text();
-      skus = parseCsvWithPapa(text);
+      inputRows = parseCsvWithPapa(text);
     } else if (lower.endsWith(".xls") || lower.endsWith(".xlsx")) {
       const buf = await file.arrayBuffer();
-      skus = parseExcelWithXlsx(buf);
+      inputRows = parseExcelWithXlsx(buf);
     } else {
       throw new Error("Unsupported file type. Please upload CSV, XLS, or XLSX.");
     }
 
-    if (!skus.length) {
+    if (!inputRows.length) {
       throw new Error("No SKU values found in a column named 'sku'.");
     }
 
-    const uniqueSkus = Array.from(new Set(skus));
+    const deduped = new Map<string, InputRow>();
+    for (const row of inputRows) {
+      const existing = deduped.get(row.sku);
+      if (!existing) {
+        deduped.set(row.sku, row);
+      } else if (!existing.price && row.price) {
+        deduped.set(row.sku, row);
+      }
+    }
 
-    setRows(uniqueSkus.map((sku) => ({ sku, ...EMPTY_ENRICHED, status: "pending" })));
+    setRows(Array.from(deduped.values()).map((row) => ({ sku: row.sku, ...EMPTY_ENRICHED, price: row.price, status: "pending" })));
   }, []);
 
   const processRows = useCallback(async () => {
@@ -179,6 +209,7 @@ export default function Page() {
                 ? {
                     ...r,
                     ...data,
+                    price: r.price || String(data?.price ?? ""),
                     status: "done",
                     error: undefined,
                     retry_count: Number(data?.retryCount ?? 0),
@@ -392,6 +423,7 @@ export default function Page() {
               <thead className="bg-zinc-900 text-red-200">
                 <tr>
                   <th className="px-3 py-2">SKU</th>
+                  <th className="px-3 py-2">Price</th>
                   <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">Name (EN)</th>
                   <th className="px-3 py-2">Name (AR)</th>
@@ -410,6 +442,9 @@ export default function Page() {
                 {rows.map((row, idx) => (
                   <tr key={`${row.sku}-${idx}`} className="border-t border-zinc-800 align-top">
                     <td className="px-3 py-2 font-medium text-red-100">{row.sku}</td>
+                    <td className="px-3 py-2">
+                      <input className="w-28 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.price} onChange={(e) => updateRowField(idx, "price", e.target.value)} />
+                    </td>
                     <td className="px-3 py-2">
                       <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_STYLES[row.status]}`}>
                         {row.status === "searching"
@@ -459,7 +494,7 @@ export default function Page() {
                 ))}
                 {!rows.length ? (
                   <tr>
-                    <td colSpan={13} className="px-3 py-8 text-center text-red-300">
+                    <td colSpan={14} className="px-3 py-8 text-center text-red-300">
                       Upload a file to begin enrichment.
                     </td>
                   </tr>

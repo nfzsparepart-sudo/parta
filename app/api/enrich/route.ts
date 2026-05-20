@@ -14,6 +14,7 @@ const DEFAULT_GEMINI_MAX_BACKOFF_MS = 15_000;
 
 type EnrichedPart = {
   sku: string;
+  price: string;
   name_en: string;
   name_ar: string;
   name_ar_colloquial: string;
@@ -32,6 +33,7 @@ function cleanOutput(json: unknown, sku: string): EnrichedPart {
 
   return {
     sku,
+    price: String(obj.price ?? "Unknown"),
     name_en: String(obj.name_en ?? ""),
     name_ar: String(obj.name_ar ?? ""),
     name_ar_colloquial: String(obj.name_ar_colloquial ?? ""),
@@ -332,6 +334,7 @@ Use grounded web search to find the most accurate details.
 
 Return strict JSON with these keys only:
 - sku
+- price
 - name_en
 - name_ar
 - name_ar_colloquial
@@ -344,6 +347,7 @@ Return strict JSON with these keys only:
 
 Rules:
 1) Keep sku exactly as input.
+2) price: numeric value only when known (no currency symbol), otherwise "Unknown".
 2) name_en: concise official English part name.
 3) name_ar: formal Modern Standard Arabic automotive name.
 4) name_ar_colloquial: Saudi colloquial automotive term commonly used in KSA workshops/market.
