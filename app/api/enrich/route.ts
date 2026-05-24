@@ -19,6 +19,7 @@ type EnrichedPart = {
   name_ar: string;
   name_ar_colloquial: string;
   description: string;
+  manufacturer_country: string;
   vehicle_brand: string;
   vehicle_model: string;
   vehicle_year: string;
@@ -38,6 +39,7 @@ function cleanOutput(json: unknown, sku: string): EnrichedPart {
     name_ar: String(obj.name_ar ?? ""),
     name_ar_colloquial: String(obj.name_ar_colloquial ?? ""),
     description: String(obj.description ?? ""),
+    manufacturer_country: String(obj.manufacturer_country ?? "Unknown"),
     vehicle_brand: String(obj.vehicle_brand ?? ""),
     vehicle_model: String(obj.vehicle_model ?? ""),
     vehicle_year: String(obj.vehicle_year ?? "Unknown"),
@@ -339,6 +341,7 @@ Return strict JSON with these keys only:
 - name_ar
 - name_ar_colloquial
 - description
+- manufacturer_country
 - vehicle_brand
 - vehicle_model
 - vehicle_year
@@ -348,15 +351,16 @@ Return strict JSON with these keys only:
 Rules:
 1) Keep sku exactly as input.
 2) price: numeric value only when known (no currency symbol), otherwise "Unknown".
-2) name_en: concise official English part name.
-3) name_ar: formal Modern Standard Arabic automotive name.
-4) name_ar_colloquial: Saudi colloquial automotive term commonly used in KSA workshops/market.
-5) description: one short factual sentence.
-6) vehicle_brand/model: return in Arabic script only (e.g., "تويوتا", "كامري"). If source is English, translate/transliterate to Arabic. If not discoverable, return "Unknown".
-7) vehicle_year: model year or year range if discoverable, otherwise "Unknown".
-8) weight_unit: one of kg, g, lb, oz when known, otherwise "Unknown".
-9) weight: numeric value only when known, otherwise "Unknown".
-10) Output valid JSON only. No markdown or code fences.
+3) name_en: concise official English part name.
+4) name_ar: formal Modern Standard Arabic automotive name.
+5) name_ar_colloquial: Saudi colloquial automotive term commonly used in KSA workshops/market.
+6) description: one short factual sentence.
+7) manufacturer_country: country where the part is manufactured (e.g., 'China', 'Japan'), otherwise 'Unknown'.
+8) vehicle_brand/model: return in Arabic script only (e.g., "تويوتا", "كامري"). If source is English, translate/transliterate to Arabic. If not discoverable, return "Unknown".
+9) vehicle_year: model year or year range if discoverable, otherwise "Unknown".
+10) weight_unit: one of kg, g, lb, oz when known, otherwise "Unknown".
+11) weight: numeric value only when known, otherwise "Unknown".
+12) Output valid JSON only. No markdown or code fences.
 `;
 
     let raw = "";
@@ -444,3 +448,4 @@ Rules:
     );
   }
 }
+

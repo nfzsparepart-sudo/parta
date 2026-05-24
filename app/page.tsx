@@ -14,6 +14,7 @@ type EnrichedPart = {
   name_ar: string;
   name_ar_colloquial: string;
   description: string;
+  manufacturer_country: string;
   vehicle_brand: string;
   vehicle_model: string;
   vehicle_year: string;
@@ -36,6 +37,7 @@ const EMPTY_ENRICHED: Omit<EnrichedPart, "sku"> = {
   name_ar: "",
   name_ar_colloquial: "",
   description: "",
+  manufacturer_country: "",
   vehicle_brand: "",
   vehicle_model: "",
   vehicle_year: "",
@@ -504,6 +506,7 @@ export default function Page() {
                   <th className="px-3 py-2">Name (AR)</th>
                   <th className="px-3 py-2">Saudi Colloquial (AR)</th>
                   <th className="px-3 py-2">Description</th>
+                  <th className="px-3 py-2">Manufacturer Country</th>
                   <th className="px-3 py-2">Brand</th>
                   <th className="px-3 py-2">Model</th>
                   <th className="px-3 py-2">Vehicle Year</th>
@@ -545,6 +548,9 @@ export default function Page() {
                       <textarea className="w-64 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" rows={2} value={row.description} onChange={(e) => updateRowField(idx, "description", e.target.value)} />
                     </td>
                     <td className="px-3 py-2">
+                      <input className="w-40 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.manufacturer_country} onChange={(e) => updateRowField(idx, "manufacturer_country", e.target.value)} />
+                    </td>
+                    <td className="px-3 py-2">
                       <input className="w-36 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.vehicle_brand} onChange={(e) => updateRowField(idx, "vehicle_brand", e.target.value)} />
                     </td>
                     <td className="px-3 py-2">
@@ -569,7 +575,7 @@ export default function Page() {
                 ))}
                 {!rows.length ? (
                   <tr>
-                    <td colSpan={14} className="px-3 py-8 text-center text-red-300">
+                    <td colSpan={15} className="px-3 py-8 text-center text-red-300">
                       Upload a file to begin enrichment.
                     </td>
                   </tr>
