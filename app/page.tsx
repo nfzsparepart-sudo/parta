@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
-import { Download, FileSpreadsheet, Loader2, UploadCloud } from "lucide-react";
+import { Download, FileSpreadsheet, Loader2, RotateCcw, UploadCloud } from "lucide-react";
 
 type RowStatus = "pending" | "searching" | "done" | "failed";
 
@@ -77,6 +77,7 @@ export default function Page() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllersRef = useRef<Set<AbortController>>(new Set());
   const stopRequestedRef = useRef(false);
 
@@ -367,6 +368,27 @@ export default function Page() {
     persistSessions(savedSessions.filter((s) => s.id !== id));
   }, [persistSessions, savedSessions]);
 
+  const resetAll = useCallback(() => {
+    if (!rows.length && !savedSessions.length && !isProcessing) return;
+    if (!window.confirm("Reset and clear all rows, saved outputs, and current progress?")) return;
+
+    stopRequestedRef.current = true;
+    abortControllersRef.current.forEach((controller) => controller.abort());
+    abortControllersRef.current.clear();
+    setRows([]);
+    setSavedSessions([]);
+    setIsProcessing(false);
+    setIsStopping(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    try {
+      localStorage.removeItem(DRAFT_STORAGE_KEY);
+      localStorage.removeItem(SESSIONS_STORAGE_KEY);
+    } catch {
+      // Ignore storage failures
+    }
+  }, [isProcessing, rows.length, savedSessions.length]);
+
   const onDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
@@ -436,7 +458,7 @@ export default function Page() {
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl bg-red-700 px-4 py-2 text-sm font-medium text-white hover:bg-red-600">
               <FileSpreadsheet className="h-4 w-4" />
               Choose file
-              <input type="file" accept=".csv,.xls,.xlsx" className="hidden" onChange={onFileInput} />
+              <input ref={fileInputRef} type="file" accept=".csv,.xls,.xlsx" className="hidden" onChange={onFileInput} />
             </label>
           </div>
         </section>
@@ -491,6 +513,15 @@ export default function Page() {
                 className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 Save Output
+              </button>
+
+              <button
+                onClick={resetAll}
+                disabled={!rows.length && !savedSessions.length && !isProcessing}
+                className="inline-flex items-center gap-2 rounded-xl bg-black px-4 py-2 text-sm font-medium text-red-100 ring-1 ring-red-900 hover:bg-zinc-950 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Reset All
               </button>
             </div>
           </div>
