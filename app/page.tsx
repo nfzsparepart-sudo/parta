@@ -22,6 +22,11 @@ type EnrichedPart = {
   image_format: string;
   weight_unit: string;
   weight: string;
+  confidence: string;
+  source_urls: string;
+  missing_fields: string;
+  needs_review: boolean;
+  quality_notes: string;
 };
 
 type PartRow = EnrichedPart & {
@@ -45,6 +50,11 @@ const EMPTY_ENRICHED: Omit<EnrichedPart, "sku"> = {
   image_format: "",
   weight_unit: "",
   weight: "",
+  confidence: "",
+  source_urls: "",
+  missing_fields: "",
+  needs_review: false,
+  quality_notes: "",
 };
 
 const STATUS_STYLES: Record<RowStatus, string> = {
@@ -54,7 +64,7 @@ const STATUS_STYLES: Record<RowStatus, string> = {
   failed: "bg-black text-red-300",
 };
 
-const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_GEMINI ?? "8") || 8);
+const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_GEMINI ?? "3") || 3);
 const PRICE_COLUMN_CANDIDATES = ["price", "part_price", "unit_price", "selling_price", "cost", "amount"];
 
 type InputRow = {
@@ -83,6 +93,7 @@ export default function Page() {
 
   const doneCount = useMemo(() => rows.filter((r) => r.status === "done").length, [rows]);
   const failedCount = useMemo(() => rows.filter((r) => r.status === "failed").length, [rows]);
+  const reviewCount = useMemo(() => rows.filter((r) => r.needs_review).length, [rows]);
   const allProcessed = rows.length > 0 && rows.every((r) => r.status === "done" || r.status === "failed");
 
   const normalizeSku = (value: unknown) => String(value ?? "").trim();
@@ -201,11 +212,14 @@ export default function Page() {
     setRows(Array.from(deduped.values()).map((row) => ({ sku: row.sku, ...EMPTY_ENRICHED, price: row.price, status: "pending" })));
   }, []);
 
-  const processRows = useCallback(async () => {
+  const processRows = useCallback(async (mode: "all" | "weak" = "all") => {
     stopRequestedRef.current = false;
     setIsStopping(false);
     setIsProcessing(true);
-    const queue = rows.map((row, index) => ({ sku: row.sku, index }));
+    const queue = rows
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => mode === "all" || row.status === "failed" || row.needs_review)
+      .map(({ row, index }) => ({ sku: row.sku, index }));
     let cursor = 0;
 
     const worker = async () => {
@@ -226,6 +240,9 @@ export default function Page() {
                   error: undefined,
                   retry_count: undefined,
                   error_code: undefined,
+                  needs_review: false,
+                  missing_fields: "",
+                  quality_notes: "",
                 }
               : r
           )
@@ -262,6 +279,11 @@ export default function Page() {
                     error: undefined,
                     retry_count: Number(data?.retryCount ?? 0),
                     error_code: undefined,
+                    confidence: String(data?.confidence ?? ""),
+                    source_urls: String(data?.source_urls ?? ""),
+                    missing_fields: String(data?.missing_fields ?? ""),
+                    needs_review: Boolean(data?.needs_review),
+                    quality_notes: String(data?.quality_notes ?? ""),
                   }
                 : r
             )
@@ -468,17 +490,26 @@ export default function Page() {
             <div className="text-sm text-red-200">
               Total: <span className="font-semibold text-red-100">{rows.length}</span> | Done:{" "}
               <span className="font-semibold text-red-300">{doneCount}</span> | Failed:{" "}
-              <span className="font-semibold text-red-400">{failedCount}</span>
+              <span className="font-semibold text-red-400">{failedCount}</span> | Review:{" "}
+              <span className="font-semibold text-yellow-200">{reviewCount}</span>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               <button
-                onClick={processRows}
+                onClick={() => processRows()}
                 disabled={!rows.length || isProcessing}
                 className="inline-flex items-center gap-2 rounded-xl bg-red-700 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isProcessing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 {isProcessing ? "Processing..." : "Start Enrichment"}
+              </button>
+
+              <button
+                onClick={() => processRows("weak")}
+                disabled={!rows.some((row) => row.status === "failed" || row.needs_review) || isProcessing}
+                className="inline-flex items-center gap-2 rounded-xl bg-zinc-800 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Retry Review
               </button>
 
               <button
@@ -527,12 +558,17 @@ export default function Page() {
           </div>
 
           <div className="overflow-auto rounded-xl border border-zinc-700">
-            <table className="min-w-[1500px] table-auto text-left text-sm">
+            <table className="min-w-[2100px] table-auto text-left text-sm">
               <thead className="bg-zinc-900 text-red-200">
                 <tr>
                   <th className="px-3 py-2">SKU</th>
                   <th className="px-3 py-2">Price</th>
                   <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Confidence</th>
+                  <th className="px-3 py-2">Review</th>
+                  <th className="px-3 py-2">Missing Fields</th>
+                  <th className="px-3 py-2">Quality Notes</th>
+                  <th className="px-3 py-2">Sources</th>
                   <th className="px-3 py-2">Name (EN)</th>
                   <th className="px-3 py-2">Name (AR)</th>
                   <th className="px-3 py-2">Saudi Colloquial (AR)</th>
@@ -565,6 +601,25 @@ export default function Page() {
                               : "Pending"}
                       </span>
                       {row.error ? <p className="mt-1 text-xs text-red-300">{row.error}</p> : null}
+                    </td>
+                    <td className="px-3 py-2 text-red-100">{row.confidence || ""}</td>
+                    <td className="px-3 py-2">
+                      <span
+                        className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
+                          row.needs_review ? "bg-yellow-900 text-yellow-100" : "bg-emerald-950 text-emerald-200"
+                        }`}
+                      >
+                        {row.needs_review ? "Needs review" : "OK"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-red-200">
+                      <div className="w-48 whitespace-pre-wrap">{row.missing_fields || ""}</div>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-red-200">
+                      <div className="w-72 whitespace-pre-wrap">{row.quality_notes || ""}</div>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-red-200">
+                      <div className="w-80 whitespace-pre-wrap break-words">{row.source_urls || ""}</div>
                     </td>
                     <td className="px-3 py-2">
                       <input className="w-44 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.name_en} onChange={(e) => updateRowField(idx, "name_en", e.target.value)} />
@@ -606,7 +661,7 @@ export default function Page() {
                 ))}
                 {!rows.length ? (
                   <tr>
-                    <td colSpan={15} className="px-3 py-8 text-center text-red-300">
+                    <td colSpan={20} className="px-3 py-8 text-center text-red-300">
                       Upload a file to begin enrichment.
                     </td>
                   </tr>
