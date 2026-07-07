@@ -64,7 +64,7 @@ const STATUS_STYLES: Record<RowStatus, string> = {
   failed: "bg-black text-red-300",
 };
 
-const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_GEMINI ?? "3") || 3);
+const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_GEMINI ?? "2") || 2);
 const PRICE_COLUMN_CANDIDATES = ["price", "part_price", "unit_price", "selling_price", "cost", "amount"];
 
 type InputRow = {

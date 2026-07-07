@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 
 const PRIMARY_MODEL = "gemini-2.5-flash";
-const FALLBACK_MODELS = ["gemini-flash-latest", "gemini-1.5-flash"];
+const FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-3.5-flash"];
 const SAUDI_DB_FILE = "saudidatabase.xlsx";
 const DEFAULT_GEMINI_TIMEOUT_MS = 45_000;
 const DEFAULT_GEMINI_MAX_RETRIES = 4;
@@ -293,6 +293,19 @@ function formatProviderError(error: unknown): { message: string; status: number 
       status: 429,
       message:
         "Gemini quota/rate limit reached (429). The app retried automatically but no capacity was available. Check plan/billing and quota usage at https://ai.dev/rate-limit and https://ai.google.dev/gemini-api/docs/rate-limits, then retry.",
+    };
+  }
+
+  if (
+    status === 503 ||
+    lower.includes("503") ||
+    lower.includes("service unavailable") ||
+    lower.includes("high demand")
+  ) {
+    return {
+      status: 503,
+      message:
+        "Gemini is temporarily overloaded (503 high demand). The app retried automatically and tried fallback models. Retry the failed rows in a few minutes or lower NEXT_PUBLIC_MAX_CONCURRENT_GEMINI.",
     };
   }
 
