@@ -87,7 +87,7 @@ function cleanOutput(json: unknown, sku: string): EnrichedPart {
   const obj = (json as Record<string, unknown>) || {};
   const cleaned = {
     sku,
-    price: normalizeNumeric(obj.price),
+    price: "",
     name_en: cleanText(obj.name_en),
     name_ar: normalizeUnknown(obj.name_ar),
     name_ar_colloquial: normalizeUnknown(obj.name_ar_colloquial),
@@ -108,7 +108,6 @@ function cleanOutput(json: unknown, sku: string): EnrichedPart {
   };
 
   const missingFields = ([
-    "price",
     "name_en",
     "name_ar",
     "name_ar_colloquial",
@@ -459,7 +458,6 @@ Use grounded web search to find the most accurate details.
 
 Return strict JSON with these keys only:
 - sku
-- price
 - name_en
 - name_ar
 - name_ar_colloquial
@@ -476,7 +474,7 @@ Return strict JSON with these keys only:
 
 Rules:
 1) Keep sku exactly as input.
-2) price: numeric value only when known (no currency symbol), otherwise "Unknown".
+2) Do not search for, infer, or return price. Price is supplied only by the uploaded Excel/CSV file.
 3) name_en: concise official English part name.
 4) name_ar: formal Modern Standard Arabic automotive name.
 5) name_ar_colloquial: Saudi colloquial automotive term commonly used in KSA workshops/market.

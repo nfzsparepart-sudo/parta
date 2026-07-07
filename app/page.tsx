@@ -274,7 +274,7 @@ export default function Page() {
                 ? {
                     ...r,
                     ...data,
-                    price: r.price || String(data?.price ?? ""),
+                    price: r.price,
                     status: "done",
                     error: undefined,
                     retry_count: Number(data?.retryCount ?? 0),
