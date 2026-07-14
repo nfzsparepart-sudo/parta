@@ -10,16 +10,29 @@ type RowStatus = "pending" | "searching" | "done" | "failed";
 type EnrichedPart = {
   sku: string;
   price: string;
+  manufacturer: string;
   name_en: string;
   name_ar: string;
   name_ar_colloquial: string;
   description: string;
+  installation_location: string;
+  compatibility: string;
+  alternative_names: string;
+  side: string;
+  superseded_by: string;
   manufacturer_country: string;
+  country: string;
   vehicle_brand: string;
   vehicle_model: string;
   vehicle_year: string;
   image_url: string;
   image_format: string;
+  image_confidence: string;
+  translation_confidence: string;
+  overall_confidence: string;
+  issues: string;
+  review_required: boolean;
+  sources: string;
   weight_unit: string;
   weight: string;
   confidence: string;
@@ -38,16 +51,29 @@ type PartRow = EnrichedPart & {
 
 const EMPTY_ENRICHED: Omit<EnrichedPart, "sku"> = {
   price: "",
+  manufacturer: "",
   name_en: "",
   name_ar: "",
   name_ar_colloquial: "",
   description: "",
+  installation_location: "",
+  compatibility: "",
+  alternative_names: "",
+  side: "",
+  superseded_by: "",
   manufacturer_country: "",
+  country: "",
   vehicle_brand: "",
   vehicle_model: "",
   vehicle_year: "",
   image_url: "",
   image_format: "",
+  image_confidence: "",
+  translation_confidence: "",
+  overall_confidence: "",
+  issues: "",
+  review_required: false,
+  sources: "",
   weight_unit: "",
   weight: "",
   confidence: "",
@@ -80,6 +106,24 @@ type SavedSession = {
 
 const DRAFT_STORAGE_KEY = "nfzalik_draft_rows_v1";
 const SESSIONS_STORAGE_KEY = "nfzalik_saved_sessions_v1";
+
+const stringifyList = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          const obj = item as Record<string, unknown>;
+          return [obj.name, obj.title, obj.url].map((part) => String(part ?? "").trim()).filter(Boolean).join(" - ");
+        }
+        return String(item ?? "");
+      })
+      .filter(Boolean)
+      .join(" | ");
+  }
+
+  return String(value ?? "");
+};
 
 export default function Page() {
   const [rows, setRows] = useState<PartRow[]>([]);
@@ -279,6 +323,19 @@ export default function Page() {
                     error: undefined,
                     retry_count: Number(data?.retryCount ?? 0),
                     error_code: undefined,
+                    manufacturer: String(data?.manufacturer ?? ""),
+                    installation_location: String(data?.installation_location ?? ""),
+                    compatibility: stringifyList(data?.compatibility),
+                    alternative_names: stringifyList(data?.alternative_names),
+                    side: String(data?.side ?? ""),
+                    superseded_by: String(data?.superseded_by ?? ""),
+                    country: String(data?.country ?? data?.manufacturer_country ?? ""),
+                    image_confidence: String(data?.image_confidence ?? ""),
+                    translation_confidence: String(data?.translation_confidence ?? ""),
+                    overall_confidence: String(data?.overall_confidence ?? data?.confidence ?? ""),
+                    issues: stringifyList(data?.issues),
+                    review_required: Boolean(data?.review_required),
+                    sources: stringifyList(data?.sources),
                     confidence: String(data?.confidence ?? ""),
                     source_urls: String(data?.source_urls ?? ""),
                     missing_fields: String(data?.missing_fields ?? ""),
@@ -558,21 +615,30 @@ export default function Page() {
           </div>
 
           <div className="overflow-auto rounded-xl border border-zinc-700">
-            <table className="min-w-[2100px] table-auto text-left text-sm">
+            <table className="min-w-[2900px] table-auto text-left text-sm">
               <thead className="bg-zinc-900 text-red-200">
                 <tr>
                   <th className="px-3 py-2">SKU</th>
                   <th className="px-3 py-2">Price</th>
                   <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">Confidence</th>
+                  <th className="px-3 py-2">Image Conf.</th>
+                  <th className="px-3 py-2">Translation Conf.</th>
                   <th className="px-3 py-2">Review</th>
+                  <th className="px-3 py-2">Issues</th>
                   <th className="px-3 py-2">Missing Fields</th>
                   <th className="px-3 py-2">Quality Notes</th>
                   <th className="px-3 py-2">Sources</th>
+                  <th className="px-3 py-2">Manufacturer</th>
                   <th className="px-3 py-2">Name (EN)</th>
                   <th className="px-3 py-2">Name (AR)</th>
                   <th className="px-3 py-2">Saudi Colloquial (AR)</th>
                   <th className="px-3 py-2">Description</th>
+                  <th className="px-3 py-2">Install Location</th>
+                  <th className="px-3 py-2">Compatibility</th>
+                  <th className="px-3 py-2">Alt Names</th>
+                  <th className="px-3 py-2">Side</th>
+                  <th className="px-3 py-2">Superseded By</th>
                   <th className="px-3 py-2">Manufacturer Country</th>
                   <th className="px-3 py-2">Brand</th>
                   <th className="px-3 py-2">Model</th>
@@ -603,14 +669,19 @@ export default function Page() {
                       {row.error ? <p className="mt-1 text-xs text-red-300">{row.error}</p> : null}
                     </td>
                     <td className="px-3 py-2 text-red-100">{row.confidence || ""}</td>
+                    <td className="px-3 py-2 text-red-100">{row.image_confidence || ""}</td>
+                    <td className="px-3 py-2 text-red-100">{row.translation_confidence || ""}</td>
                     <td className="px-3 py-2">
                       <span
                         className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
-                          row.needs_review ? "bg-yellow-900 text-yellow-100" : "bg-emerald-950 text-emerald-200"
+                          row.needs_review || row.review_required ? "bg-yellow-900 text-yellow-100" : "bg-emerald-950 text-emerald-200"
                         }`}
                       >
-                        {row.needs_review ? "Needs review" : "OK"}
+                        {row.needs_review || row.review_required ? "Needs review" : "OK"}
                       </span>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-red-200">
+                      <div className="w-56 whitespace-pre-wrap">{row.issues || ""}</div>
                     </td>
                     <td className="px-3 py-2 text-xs text-red-200">
                       <div className="w-48 whitespace-pre-wrap">{row.missing_fields || ""}</div>
@@ -620,6 +691,9 @@ export default function Page() {
                     </td>
                     <td className="px-3 py-2 text-xs text-red-200">
                       <div className="w-80 whitespace-pre-wrap break-words">{row.source_urls || ""}</div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <input className="w-36 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.manufacturer} onChange={(e) => updateRowField(idx, "manufacturer", e.target.value)} />
                     </td>
                     <td className="px-3 py-2">
                       <input className="w-44 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.name_en} onChange={(e) => updateRowField(idx, "name_en", e.target.value)} />
@@ -632,6 +706,21 @@ export default function Page() {
                     </td>
                     <td className="px-3 py-2">
                       <textarea className="w-64 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" rows={2} value={row.description} onChange={(e) => updateRowField(idx, "description", e.target.value)} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input className="w-44 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.installation_location} onChange={(e) => updateRowField(idx, "installation_location", e.target.value)} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <textarea className="w-64 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" rows={2} value={row.compatibility} onChange={(e) => updateRowField(idx, "compatibility", e.target.value)} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input className="w-52 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.alternative_names} onChange={(e) => updateRowField(idx, "alternative_names", e.target.value)} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input className="w-24 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.side} onChange={(e) => updateRowField(idx, "side", e.target.value)} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input className="w-36 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.superseded_by} onChange={(e) => updateRowField(idx, "superseded_by", e.target.value)} />
                     </td>
                     <td className="px-3 py-2">
                       <input className="w-40 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.manufacturer_country} onChange={(e) => updateRowField(idx, "manufacturer_country", e.target.value)} />
@@ -661,7 +750,7 @@ export default function Page() {
                 ))}
                 {!rows.length ? (
                   <tr>
-                    <td colSpan={20} className="px-3 py-8 text-center text-red-300">
+                    <td colSpan={31} className="px-3 py-8 text-center text-red-300">
                       Upload a file to begin enrichment.
                     </td>
                   </tr>
