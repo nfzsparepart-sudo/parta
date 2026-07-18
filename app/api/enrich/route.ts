@@ -334,7 +334,7 @@ async function fetchImageCandidatesFromSerpApi(
   terms: string[],
   overrideKey?: string
 ): Promise<ImageCandidate[]> {
-  const allowedFormats = new Set(["jpg", "jpeg", "png"]);
+  const allowedFormats = new Set(["jpg", "jpeg", "png", "webp", "gif"]);
   const key = overrideKey;
   if (!key) {
     return [];
