@@ -3,6 +3,13 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import * as XLSX from "xlsx";
 import path from "node:path";
 import fs from "node:fs";
+import {
+  createSourceIdentity,
+  normalizeSkuForAssociation,
+  parseReviewerNote,
+  validateAssociation,
+  type SourceIdentity,
+} from "../../lib/integrity";
 
 const PRIMARY_MODEL = "gemini-2.5-flash";
 const FALLBACK_MODELS = ["gemini-2.5-flash-lite", "gemini-3.5-flash"];
@@ -61,6 +68,21 @@ type EnrichedPart = {
   missing_fields: string;
   needs_review: boolean;
   quality_notes: string;
+  source_row_id: string;
+  source_excel_row: number;
+  source_sku_raw: string;
+  source_sku_normalized: string;
+  source_note_raw: string;
+  source_file_id: string;
+  import_batch_id: string;
+  oem_candidate: string;
+  search_variants: string;
+  note_parsed_hints: string;
+  association_confidence: string;
+  association_checks: string;
+  image_status: string;
+  review_reason: string;
+  cross_binding_detected: boolean;
 };
 
 type SourceEvidence = {
@@ -251,7 +273,7 @@ function normalizeCompatibility(value: unknown): string[] {
   return normalizeStringList(value);
 }
 
-function cleanOutput(json: unknown, sku: string): EnrichedPart {
+function cleanOutput(json: unknown, identity: SourceIdentity): EnrichedPart {
   const obj = (json as Record<string, unknown>) || {};
   const compatibility = normalizeCompatibility(obj.compatibility);
   const sources = normalizeSources(obj.sources || obj.source_urls);
@@ -259,7 +281,7 @@ function cleanOutput(json: unknown, sku: string): EnrichedPart {
   const translationConfidence = confidenceNumber(obj.translation_confidence || obj.confidence);
   const overallConfidence = confidenceNumber(obj.overall_confidence || obj.confidence);
   const cleaned = {
-    sku,
+    sku: identity.source_sku_raw,
     price: "",
     manufacturer: normalizeUnknown(obj.manufacturer),
     name_en: cleanText(obj.name_en),
@@ -291,6 +313,21 @@ function cleanOutput(json: unknown, sku: string): EnrichedPart {
     missing_fields: "",
     needs_review: false,
     quality_notes: cleanText(obj.quality_notes),
+    source_row_id: identity.source_row_id,
+    source_excel_row: identity.source_excel_row,
+    source_sku_raw: identity.source_sku_raw,
+    source_sku_normalized: identity.source_sku_normalized,
+    source_note_raw: identity.source_note_raw,
+    source_file_id: identity.source_file_id,
+    import_batch_id: identity.import_batch_id,
+    oem_candidate: identity.oem_candidate,
+    search_variants: identity.search_variants.join(" | "),
+    note_parsed_hints: JSON.stringify(identity.note_parsed_hints),
+    association_confidence: "0",
+    association_checks: "",
+    image_status: "NOT_FOUND",
+    review_reason: "",
+    cross_binding_detected: false,
   };
 
   const missingFields = ([
@@ -769,11 +806,24 @@ function resolveSaudiColloquial(nameEn: string, nameAr: string, currentColloquia
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const sku = String(body?.sku ?? "").trim();
+    const sourceSkuRaw = String(body?.source_sku_raw ?? body?.sku ?? "").trim();
+    const sourceNoteRaw = String(body?.source_note_raw ?? "").trim();
+    const sourceExcelRow = Number(body?.source_excel_row ?? 0) || 0;
+    const sourceFileId = String(body?.source_file_id ?? "unknown-file");
+    const importBatchId = String(body?.import_batch_id ?? "unknown-batch");
+    const identity = createSourceIdentity({
+      sourceRowId: String(body?.source_row_id ?? "") || undefined,
+      sourceExcelRow,
+      sourceSkuRaw,
+      sourceNoteRaw,
+      sourceFileId,
+      importBatchId,
+    });
+    const sku = identity.source_sku_raw;
     const geminiApiKey = String(process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "").trim();
     const serpApiKey = String(process.env.SERPAPI_API_KEY ?? "").trim();
 
-    if (!sku) {
+    if (!sourceSkuRaw) {
       return NextResponse.json({ error: "Missing 'sku' in request body." }, { status: 400 });
     }
 
@@ -840,7 +890,13 @@ Rules:
     const validationPrompt = `
 You are a strict automotive spare parts catalog validator for Saudi Arabia.
 
-SKU: ${sku}
+Raw source SKU: ${identity.source_sku_raw}
+Normalized source SKU: ${identity.source_sku_normalized}
+OEM candidate: ${identity.oem_candidate}
+Search variants: ${identity.search_variants.join(", ")}
+Original Excel row: ${identity.source_excel_row}
+Reviewer note: ${identity.source_note_raw || "None"}
+Parsed reviewer note hints: ${JSON.stringify(identity.note_parsed_hints)}
 
 Search and merge evidence from these sources when relevant, ranked by reliability:
 ${trustedSourceText}
@@ -859,7 +915,12 @@ Quality rules:
 
 Return strict JSON only with these keys:
 {
-  "sku": "",
+  "sku": "${identity.source_sku_raw}",
+  "source_row_id": "${identity.source_row_id}",
+  "source_excel_row": ${identity.source_excel_row},
+  "source_sku_raw": "${identity.source_sku_raw}",
+  "source_sku_normalized": "${identity.source_sku_normalized}",
+  "source_note_raw": ${JSON.stringify(identity.source_note_raw)},
   "manufacturer": "",
   "name_en": "",
   "name_ar": "",
@@ -938,7 +999,8 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
     }
 
     const parsed = extractJsonObject(raw);
-    const cleaned = cleanOutput(parsed, sku);
+    const parsedRecord = parsed as Record<string, unknown>;
+    const cleaned = cleanOutput(parsed, identity);
     const mergedSources = normalizeSources((parsed as Record<string, unknown>)?.sources, [
       ...normalizeStringList(cleaned.source_urls),
       ...sourceUrls,
@@ -962,15 +1024,24 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
       .filter((x) => x && x !== "Unknown")
       .join(" ");
     const imageCandidates = await fetchImageCandidatesFromSerpApi(imageQuery || sku, imageTerms, serpApiKey || undefined);
-    const imageReview = await selectValidatedImage(genAI, imageCandidates, {
-      ...cleaned,
-      name_ar_colloquial: resolvedColloquial,
-    }, timeoutMs);
+    const imageReview = identity.note_parsed_hints.image_expected === false && imageCandidates.length === 0
+      ? {
+          image_url: "Unknown",
+          image_format: "Unknown",
+          image_confidence: 0,
+          rejected: true,
+          issues: ["MISSING_IMAGE"],
+          notes: "Reviewer note says no image is expected and no verified image candidate was found.",
+        }
+      : await selectValidatedImage(genAI, imageCandidates, {
+          ...cleaned,
+          name_ar_colloquial: resolvedColloquial,
+        }, timeoutMs);
     const issues = mergeIssues(
       normalizeStringList(cleaned.issues),
       imageReview.issues,
       sideMismatch ? ["SIDE_MISMATCH"] : [],
-      imageReview.rejected ? ["WRONG_IMAGE"] : [],
+      imageReview.rejected && imageCandidates.length > 0 ? ["WRONG_IMAGE"] : [],
       !cleaned.compatibility || cleaned.compatibility === "Unknown" ? ["MISSING_COMPATIBILITY"] : [],
       !hasArabic(cleaned.name_ar) || !hasArabic(resolvedColloquial) ? ["TRANSLATION_MISMATCH"] : [],
       cleaned.superseded_by && cleaned.superseded_by !== "Unknown" ? ["SUPERSEDED_SKU"] : []
@@ -979,7 +1050,7 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
       .split(",")
       .map((field) => field.trim())
       .filter((field) => field && !(field === "name_ar_colloquial" && resolvedColloquial !== "Unknown"));
-    if (imageReview.image_url === "Unknown" && !missingFields.includes("image_url")) {
+    if (imageReview.rejected && !missingFields.includes("image_url")) {
       missingFields.push("image_url");
     }
     const qualityNotes = cleaned.quality_notes
@@ -1007,23 +1078,63 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
       qualityNotes.length > 0 ||
       imageReview.rejected ||
       sideMismatch;
+    const association = validateAssociation(identity, {
+      ...parsedRecord,
+      source_row_id: parsedRecord.source_row_id || identity.source_row_id,
+      source_excel_row: parsedRecord.source_excel_row || identity.source_excel_row,
+      source_sku_raw: parsedRecord.source_sku_raw || identity.source_sku_raw,
+      source_sku_normalized: parsedRecord.source_sku_normalized || normalizeSkuForAssociation(parsedRecord.source_sku_raw || parsedRecord.sku || identity.source_sku_raw),
+      source_note_raw: parsedRecord.source_note_raw ?? identity.source_note_raw,
+      sku: parsedRecord.sku || identity.source_sku_raw,
+      name_ar_colloquial: resolvedColloquial,
+    });
+    const imageStatus =
+      !imageCandidates.length
+        ? "NOT_FOUND"
+        : imageReview.issues.includes("LOW_RESOLUTION")
+          ? "REJECTED_LOW_RESOLUTION"
+          : imageReview.issues.includes("WRONG_SIDE") || imageReview.issues.includes("REJECTED_WRONG_SIDE")
+            ? "REJECTED_WRONG_SIDE"
+            : imageReview.rejected
+              ? "REJECTED_WRONG_PART"
+              : imageReview.image_confidence >= 90
+                ? "VERIFIED"
+                : "CANDIDATE_UNVERIFIED";
+    const allIssues = mergeIssues(issues, association.issues);
+    const finalReviewRequired = reviewRequired || !association.accepted || association.issues.length > 0;
+    const reviewReason = uniqueStrings([association.review_reason, finalReviewRequired ? qualityNotes.join(" | ") : ""].filter(Boolean)).join(" | ");
 
     return NextResponse.json({
       ...cleaned,
+      source_row_id: identity.source_row_id,
+      source_excel_row: identity.source_excel_row,
+      source_sku_raw: identity.source_sku_raw,
+      source_sku_normalized: identity.source_sku_normalized,
+      source_note_raw: identity.source_note_raw,
+      source_file_id: identity.source_file_id,
+      import_batch_id: identity.import_batch_id,
+      oem_candidate: identity.oem_candidate,
+      search_variants: identity.search_variants.join(" | "),
+      note_parsed_hints: identity.note_parsed_hints,
       name_ar_colloquial: resolvedColloquial,
-      image_url: imageReview.rejected ? "Unknown" : imageReview.image_url,
+      image_url: imageReview.rejected ? null : imageReview.image_url,
       image_format: imageReview.rejected ? "Unknown" : imageReview.image_format,
+      image_status: imageStatus,
       image_confidence: String(imageReview.image_confidence),
       translation_confidence: String(translationConfidence),
       overall_confidence: String(overallConfidence),
       confidence: String(overallConfidence),
-      issues,
-      review_required: reviewRequired,
+      issues: allIssues,
+      review_required: finalReviewRequired,
       sources: mergedSources,
       source_urls: mergedSourceUrls.join(" | "),
       missing_fields: missingFields.join(", "),
-      needs_review: reviewRequired,
+      needs_review: finalReviewRequired,
       quality_notes: qualityNotes.join(" | "),
+      association_confidence: String(association.association_confidence),
+      association_checks: association.association_checks,
+      review_reason: reviewReason,
+      cross_binding_detected: association.cross_binding_detected,
       retryCount: totalRetriesUsed,
     });
   } catch (error) {

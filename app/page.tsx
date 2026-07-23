@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { Download, FileSpreadsheet, Loader2, RotateCcw, UploadCloud } from "lucide-react";
+import { createSourceIdentity, mergeResultBySourceRowId, type SourceIdentity } from "./lib/integrity";
 
 type RowStatus = "pending" | "searching" | "done" | "failed";
 
@@ -40,6 +41,21 @@ type EnrichedPart = {
   missing_fields: string;
   needs_review: boolean;
   quality_notes: string;
+  source_row_id: string;
+  source_excel_row: number;
+  source_sku_raw: string;
+  source_sku_normalized: string;
+  source_note_raw: string;
+  source_file_id: string;
+  import_batch_id: string;
+  oem_candidate: string;
+  search_variants: string;
+  note_parsed_hints: string;
+  association_confidence: string;
+  association_checks: string;
+  image_status: string;
+  review_reason: string;
+  cross_binding_detected: boolean;
 };
 
 type PartRow = EnrichedPart & {
@@ -81,6 +97,21 @@ const EMPTY_ENRICHED: Omit<EnrichedPart, "sku"> = {
   missing_fields: "",
   needs_review: false,
   quality_notes: "",
+  source_row_id: "",
+  source_excel_row: 0,
+  source_sku_raw: "",
+  source_sku_normalized: "",
+  source_note_raw: "",
+  source_file_id: "",
+  import_batch_id: "",
+  oem_candidate: "",
+  search_variants: "",
+  note_parsed_hints: "",
+  association_confidence: "",
+  association_checks: "",
+  image_status: "",
+  review_reason: "",
+  cross_binding_detected: false,
 };
 
 const STATUS_STYLES: Record<RowStatus, string> = {
@@ -92,8 +123,9 @@ const STATUS_STYLES: Record<RowStatus, string> = {
 
 const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_GEMINI ?? "2") || 2);
 const PRICE_COLUMN_CANDIDATES = ["price", "part_price", "unit_price", "selling_price", "cost", "amount"];
+const NOTE_COLUMN_CANDIDATES = ["reviewer note", "reviewer_note", "note", "notes", "al", "ملاحظة", "ملاحظات"];
 
-type InputRow = {
+type InputRow = SourceIdentity & {
   sku: string;
   price: string;
 };
@@ -125,6 +157,23 @@ const stringifyList = (value: unknown): string => {
   return String(value ?? "");
 };
 
+const ensureRowIdentity = (row: PartRow, index: number): PartRow => {
+  if (row.source_row_id && row.source_sku_raw && row.source_sku_normalized) return row;
+  const identity = createSourceIdentity({
+    sourceExcelRow: row.source_excel_row || index + 2,
+    sourceSkuRaw: row.source_sku_raw || row.sku,
+    sourceNoteRaw: row.source_note_raw || "",
+    sourceFileId: row.source_file_id || "legacy-local-storage",
+    importBatchId: row.import_batch_id || "legacy-import",
+  });
+  return {
+    ...row,
+    ...identity,
+    search_variants: identity.search_variants.join(" | "),
+    note_parsed_hints: JSON.stringify(identity.note_parsed_hints),
+  };
+};
+
 export default function Page() {
   const [rows, setRows] = useState<PartRow[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -147,13 +196,15 @@ export default function Page() {
       const draftRaw = localStorage.getItem(DRAFT_STORAGE_KEY);
       if (draftRaw) {
         const parsed = JSON.parse(draftRaw) as PartRow[];
-        if (Array.isArray(parsed) && parsed.length) setRows(parsed);
+        if (Array.isArray(parsed) && parsed.length) setRows(parsed.map(ensureRowIdentity));
       }
 
       const sessionsRaw = localStorage.getItem(SESSIONS_STORAGE_KEY);
       if (sessionsRaw) {
         const parsed = JSON.parse(sessionsRaw) as SavedSession[];
-        if (Array.isArray(parsed)) setSavedSessions(parsed);
+        if (Array.isArray(parsed)) {
+          setSavedSessions(parsed.map((session) => ({ ...session, rows: session.rows.map(ensureRowIdentity) })));
+        }
       }
     } catch {
       // Ignore invalid persisted storage
@@ -178,8 +229,15 @@ export default function Page() {
   }, []);
 
   const normalizePrice = (value: unknown) => String(value ?? "").trim();
+  const normalizeHeader = (value: unknown) => String(value ?? "").trim().toLowerCase();
+  const findColumnValue = (row: Record<string, unknown>, candidates: string[]) => {
+    const key = Object.keys(row).find((k) => candidates.includes(normalizeHeader(k)));
+    return key ? row[key] : "";
+  };
+  const createFileId = (file: File) => `${file.name}:${file.size}:${file.lastModified}`;
+  const createImportBatchId = () => `batch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-  const parseCsvWithPapa = (text: string): InputRow[] => {
+  const parseCsvWithPapa = (text: string, fileId: string, importBatchId: string): InputRow[] => {
     const parsed = Papa.parse<Record<string, unknown>>(text, {
       header: true,
       skipEmptyLines: true,
@@ -191,23 +249,31 @@ export default function Page() {
     }
 
     return parsed.data
-      .map((r) => {
+      .map((r, index) => {
         const sku = normalizeSku(r.sku);
         if (!sku) return null;
 
-        const priceKey = Object.keys(r).find((k) => PRICE_COLUMN_CANDIDATES.includes(k.trim().toLowerCase()));
-        const price = priceKey ? normalizePrice(r[priceKey]) : "";
-        return { sku, price };
+        const price = normalizePrice(findColumnValue(r, PRICE_COLUMN_CANDIDATES));
+        const note = String(findColumnValue(r, NOTE_COLUMN_CANDIDATES) ?? "").trim();
+        const identity = createSourceIdentity({
+          sourceExcelRow: index + 2,
+          sourceSkuRaw: sku,
+          sourceNoteRaw: note,
+          sourceFileId: fileId,
+          importBatchId,
+        });
+        return { ...identity, sku, price };
       })
       .filter((row): row is InputRow => Boolean(row));
   };
 
-  const parseExcelWithXlsx = (arrayBuffer: ArrayBuffer): InputRow[] => {
+  const parseExcelWithXlsx = (arrayBuffer: ArrayBuffer, fileId: string, importBatchId: string): InputRow[] => {
     const workbook = XLSX.read(arrayBuffer, { type: "array" });
     const firstSheetName = workbook.SheetNames[0];
     if (!firstSheetName) return [];
 
     const sheet = workbook.Sheets[firstSheetName];
+    const range = XLSX.utils.decode_range(sheet["!ref"] || "A1:A1");
     const data = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
       defval: "",
     });
@@ -218,23 +284,37 @@ export default function Page() {
         const sku = skuKey ? normalizeSku(r[skuKey]) : "";
         if (!sku) return null;
 
-        const priceKey = Object.keys(r).find((k) => PRICE_COLUMN_CANDIDATES.includes(k.trim().toLowerCase()));
-        const price = priceKey ? normalizePrice(r[priceKey]) : "";
-        return { sku, price };
+        const rowNumber = Number((r as { __rowNum__?: number }).__rowNum__ ?? 0) + 1 || 0;
+        const noteFromHeader = String(findColumnValue(r, NOTE_COLUMN_CANDIDATES) ?? "").trim();
+        const noteCell = rowNumber
+          ? sheet[XLSX.utils.encode_cell({ r: rowNumber - 1, c: 37 })]?.v
+          : "";
+        const note = String(noteFromHeader || noteCell || "").trim();
+        const price = normalizePrice(findColumnValue(r, PRICE_COLUMN_CANDIDATES));
+        const identity = createSourceIdentity({
+          sourceExcelRow: rowNumber || range.s.r + 2,
+          sourceSkuRaw: sku,
+          sourceNoteRaw: note,
+          sourceFileId: fileId,
+          importBatchId,
+        });
+        return { ...identity, sku, price };
       })
       .filter((row): row is InputRow => Boolean(row));
   };
 
   const handleFile = useCallback(async (file: File) => {
     const lower = file.name.toLowerCase();
+    const fileId = createFileId(file);
+    const importBatchId = createImportBatchId();
     let inputRows: InputRow[] = [];
 
     if (lower.endsWith(".csv")) {
       const text = await file.text();
-      inputRows = parseCsvWithPapa(text);
+      inputRows = parseCsvWithPapa(text, fileId, importBatchId);
     } else if (lower.endsWith(".xls") || lower.endsWith(".xlsx")) {
       const buf = await file.arrayBuffer();
-      inputRows = parseExcelWithXlsx(buf);
+      inputRows = parseExcelWithXlsx(buf, fileId, importBatchId);
     } else {
       throw new Error("Unsupported file type. Please upload CSV, XLS, or XLSX.");
     }
@@ -243,17 +323,23 @@ export default function Page() {
       throw new Error("No SKU values found in a column named 'sku'.");
     }
 
-    const deduped = new Map<string, InputRow>();
+    const uniqueImportKeys = new Set<string>();
     for (const row of inputRows) {
-      const existing = deduped.get(row.sku);
-      if (!existing) {
-        deduped.set(row.sku, row);
-      } else if (!existing.price && row.price) {
-        deduped.set(row.sku, row);
+      const key = `${row.import_batch_id}:${row.source_row_id}`;
+      if (uniqueImportKeys.has(key)) {
+        throw new Error("Duplicate source row identity detected in import batch.");
       }
+      uniqueImportKeys.add(key);
     }
 
-    setRows(Array.from(deduped.values()).map((row) => ({ sku: row.sku, ...EMPTY_ENRICHED, price: row.price, status: "pending" })));
+    setRows(inputRows.map((row) => ({
+      ...EMPTY_ENRICHED,
+      ...row,
+      price: row.price,
+      search_variants: row.search_variants.join(" | "),
+      note_parsed_hints: JSON.stringify(row.note_parsed_hints),
+      status: "pending",
+    })));
   }, []);
 
   const processRows = useCallback(async (mode: "all" | "weak" = "all") => {
@@ -261,9 +347,19 @@ export default function Page() {
     setIsStopping(false);
     setIsProcessing(true);
     const queue = rows
-      .map((row, index) => ({ row, index }))
-      .filter(({ row }) => mode === "all" || row.status === "failed" || row.needs_review)
-      .map(({ row, index }) => ({ sku: row.sku, index }));
+      .filter((row) => mode === "all" || row.status === "failed" || row.needs_review)
+      .map((row) => ({
+        source_row_id: row.source_row_id,
+        source_excel_row: row.source_excel_row,
+        source_sku_raw: row.source_sku_raw || row.sku,
+        source_sku_normalized: row.source_sku_normalized,
+        source_note_raw: row.source_note_raw,
+        source_file_id: row.source_file_id,
+        import_batch_id: row.import_batch_id,
+        oem_candidate: row.oem_candidate,
+        search_variants: row.search_variants,
+        note_parsed_hints: row.note_parsed_hints,
+      }));
     let cursor = 0;
 
     const worker = async () => {
@@ -273,11 +369,11 @@ export default function Page() {
         cursor += 1;
         if (current >= queue.length) return;
 
-        const { sku, index } = queue[current];
+        const job = queue[current];
 
         setRows((prev) =>
           prev.map((r, idx) =>
-            idx === index
+            r.source_row_id === job.source_row_id
               ? {
                   ...r,
                   status: "searching",
@@ -298,7 +394,7 @@ export default function Page() {
           const res = await fetch("/api/enrich", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sku }),
+            body: JSON.stringify(job),
             signal: controller.signal,
           }).finally(() => {
             abortControllersRef.current.delete(controller);
@@ -313,43 +409,50 @@ export default function Page() {
           }
 
           setRows((prev) =>
-            prev.map((r, idx) =>
-              idx === index
-                ? {
+            mergeResultBySourceRowId(prev, data, (r, result, integrity) => {
+              const resultIssues = stringifyList(result?.issues);
+              const integrityIssues = integrity.issues.join(", ");
+              return {
                     ...r,
-                    ...data,
+                    ...result,
                     price: r.price,
                     status: "done",
                     error: undefined,
-                    retry_count: Number(data?.retryCount ?? 0),
+                    retry_count: Number(result?.retryCount ?? 0),
                     error_code: undefined,
-                    manufacturer: String(data?.manufacturer ?? ""),
-                    installation_location: String(data?.installation_location ?? ""),
-                    compatibility: stringifyList(data?.compatibility),
-                    alternative_names: stringifyList(data?.alternative_names),
-                    side: String(data?.side ?? ""),
-                    superseded_by: String(data?.superseded_by ?? ""),
-                    country: String(data?.country ?? data?.manufacturer_country ?? ""),
-                    image_confidence: String(data?.image_confidence ?? ""),
-                    translation_confidence: String(data?.translation_confidence ?? ""),
-                    overall_confidence: String(data?.overall_confidence ?? data?.confidence ?? ""),
-                    issues: stringifyList(data?.issues),
-                    review_required: Boolean(data?.review_required),
-                    sources: stringifyList(data?.sources),
-                    confidence: String(data?.confidence ?? ""),
-                    source_urls: String(data?.source_urls ?? ""),
-                    missing_fields: String(data?.missing_fields ?? ""),
-                    needs_review: Boolean(data?.needs_review),
-                    quality_notes: String(data?.quality_notes ?? ""),
-                  }
-                : r
-            )
+                    manufacturer: String(result?.manufacturer ?? ""),
+                    installation_location: String(result?.installation_location ?? ""),
+                    compatibility: stringifyList(result?.compatibility),
+                    alternative_names: stringifyList(result?.alternative_names),
+                    side: String(result?.side ?? ""),
+                    superseded_by: String(result?.superseded_by ?? ""),
+                    country: String(result?.country ?? result?.manufacturer_country ?? ""),
+                    image_url: String(result?.image_url ?? ""),
+                    image_format: String(result?.image_format ?? ""),
+                    image_status: String(result?.image_status ?? ""),
+                    image_confidence: String(result?.image_confidence ?? ""),
+                    translation_confidence: String(result?.translation_confidence ?? ""),
+                    overall_confidence: String(result?.overall_confidence ?? result?.confidence ?? ""),
+                    issues: [resultIssues, integrityIssues].filter(Boolean).join(", "),
+                    review_required: Boolean(result?.review_required) || !integrity.accepted || integrity.issues.length > 0,
+                    sources: stringifyList(result?.sources),
+                    confidence: String(result?.confidence ?? ""),
+                    source_urls: String(result?.source_urls ?? ""),
+                    missing_fields: String(result?.missing_fields ?? ""),
+                    needs_review: Boolean(result?.needs_review) || integrity.issues.length > 0,
+                    quality_notes: String(result?.quality_notes ?? ""),
+                    association_confidence: String(integrity.association_confidence),
+                    association_checks: JSON.stringify(integrity.association_checks),
+                    review_reason: String(result?.review_reason || integrity.review_reason),
+                    cross_binding_detected: Boolean(result?.cross_binding_detected) || integrity.cross_binding_detected,
+                  };
+            })
           );
         } catch (err) {
           if (err instanceof DOMException && err.name === "AbortError") {
             setRows((prev) =>
-              prev.map((r, idx) =>
-                idx === index
+              prev.map((r) =>
+                r.source_row_id === job.source_row_id
                   ? {
                       ...r,
                       status: "pending",
@@ -367,8 +470,8 @@ export default function Page() {
           const errorCode = codeMatch ? codeMatch[1] : undefined;
 
           setRows((prev) =>
-            prev.map((r, idx) =>
-              idx === index
+            prev.map((r) =>
+              r.source_row_id === job.source_row_id
                 ? {
                     ...r,
                     status: "failed",
@@ -615,16 +718,24 @@ export default function Page() {
           </div>
 
           <div className="overflow-auto rounded-xl border border-zinc-700">
-            <table className="min-w-[2900px] table-auto text-left text-sm">
+            <table className="min-w-[3600px] table-auto text-left text-sm">
               <thead className="bg-zinc-900 text-red-200">
                 <tr>
                   <th className="px-3 py-2">SKU</th>
+                  <th className="px-3 py-2">Row ID</th>
+                  <th className="px-3 py-2">Excel Row</th>
+                  <th className="px-3 py-2">Raw SKU</th>
+                  <th className="px-3 py-2">Normalized SKU</th>
+                  <th className="px-3 py-2">Reviewer Note</th>
                   <th className="px-3 py-2">Price</th>
                   <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">Confidence</th>
+                  <th className="px-3 py-2">Association Conf.</th>
                   <th className="px-3 py-2">Image Conf.</th>
                   <th className="px-3 py-2">Translation Conf.</th>
+                  <th className="px-3 py-2">Image Status</th>
                   <th className="px-3 py-2">Review</th>
+                  <th className="px-3 py-2">Review Reason</th>
                   <th className="px-3 py-2">Issues</th>
                   <th className="px-3 py-2">Missing Fields</th>
                   <th className="px-3 py-2">Quality Notes</th>
@@ -651,8 +762,17 @@ export default function Page() {
               </thead>
               <tbody>
                 {rows.map((row, idx) => (
-                  <tr key={`${row.sku}-${idx}`} className="border-t border-zinc-800 align-top">
+                  <tr key={row.source_row_id || `${row.sku}-${idx}`} className="border-t border-zinc-800 align-top">
                     <td className="px-3 py-2 font-medium text-red-100">{row.sku}</td>
+                    <td className="px-3 py-2 text-xs text-red-200">
+                      <div className="w-48 break-words">{row.source_row_id}</div>
+                    </td>
+                    <td className="px-3 py-2 text-red-100">{row.source_excel_row || ""}</td>
+                    <td className="px-3 py-2 text-red-100">{row.source_sku_raw}</td>
+                    <td className="px-3 py-2 text-red-100">{row.source_sku_normalized}</td>
+                    <td className="px-3 py-2 text-xs text-red-200">
+                      <div className="w-56 whitespace-pre-wrap">{row.source_note_raw}</div>
+                    </td>
                     <td className="px-3 py-2">
                       <input className="w-28 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.price} onChange={(e) => updateRowField(idx, "price", e.target.value)} />
                     </td>
@@ -669,8 +789,10 @@ export default function Page() {
                       {row.error ? <p className="mt-1 text-xs text-red-300">{row.error}</p> : null}
                     </td>
                     <td className="px-3 py-2 text-red-100">{row.confidence || ""}</td>
+                    <td className="px-3 py-2 text-red-100">{row.association_confidence || ""}</td>
                     <td className="px-3 py-2 text-red-100">{row.image_confidence || ""}</td>
                     <td className="px-3 py-2 text-red-100">{row.translation_confidence || ""}</td>
+                    <td className="px-3 py-2 text-red-100">{row.image_status || ""}</td>
                     <td className="px-3 py-2">
                       <span
                         className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
@@ -679,6 +801,9 @@ export default function Page() {
                       >
                         {row.needs_review || row.review_required ? "Needs review" : "OK"}
                       </span>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-red-200">
+                      <div className="w-64 whitespace-pre-wrap">{row.review_reason || ""}</div>
                     </td>
                     <td className="px-3 py-2 text-xs text-red-200">
                       <div className="w-56 whitespace-pre-wrap">{row.issues || ""}</div>
@@ -750,7 +875,7 @@ export default function Page() {
                 ))}
                 {!rows.length ? (
                   <tr>
-                    <td colSpan={31} className="px-3 py-8 text-center text-red-300">
+                    <td colSpan={40} className="px-3 py-8 text-center text-red-300">
                       Upload a file to begin enrichment.
                     </td>
                   </tr>
