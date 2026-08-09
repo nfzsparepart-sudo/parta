@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createSourceIdentity, mergeResultBySourceRowId, validateAssociation } from "../app/lib/integrity.ts";
+import {
+  createSourceIdentity,
+  mergeResultBySourceRowId,
+  validateAssociation,
+  validateWorkerResultForJob,
+} from "../app/lib/integrity.ts";
 
 type TestRow = ReturnType<typeof createSourceIdentity> & {
   sku: string;
@@ -151,6 +156,35 @@ test("worker returning another row SKU is rejected", () => {
 
   assert.equal(integrity.accepted, false);
   assert.ok(integrity.issues.includes("CROSS_BOUND_RESULT_REJECTED"));
+});
+
+test("worker returning another row_id is rejected before merge and does not update neighbor", () => {
+  const rowA = row(2, "FD-6W7Z5426605A", "Door Handle");
+  const rowB = row(3, "FD-SP411", "Platinum Spark Plug");
+  const wrongResult = {
+    source_row_id: rowB.source_row_id,
+    source_excel_row: rowB.source_excel_row,
+    source_sku_raw: rowB.source_sku_raw,
+    source_sku_normalized: rowB.source_sku_normalized,
+    source_note_raw: rowB.source_note_raw,
+    sku: rowB.source_sku_raw,
+    name_en: "Motorcraft Platinum Spark Plug",
+  };
+  const jobIntegrity = validateWorkerResultForJob(rowA, wrongResult);
+  const rows = [rowA, rowB].map((item) =>
+    item.source_row_id === rowA.source_row_id && !jobIntegrity.accepted
+      ? {
+          ...item,
+          status: "failed",
+          error: "CROSS_BOUND_RESULT_REJECTED",
+        }
+      : item
+  );
+
+  assert.equal(jobIntegrity.accepted, false);
+  assert.ok(jobIntegrity.issues.includes("CROSS_BOUND_RESULT_REJECTED"));
+  assert.equal(rows[0].status, "failed");
+  assert.equal(rows[1].name_en, undefined);
 });
 
 test("platinum spark plug note with door handle result is semantic cross-binding", () => {

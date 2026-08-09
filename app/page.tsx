@@ -4,7 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { Download, FileSpreadsheet, Loader2, RotateCcw, UploadCloud } from "lucide-react";
-import { createSourceIdentity, mergeResultBySourceRowId, type SourceIdentity } from "./lib/integrity";
+import {
+  createSourceIdentity,
+  mergeResultBySourceRowId,
+  validateWorkerResultForJob,
+  type SourceIdentity,
+} from "./lib/integrity";
 
 type RowStatus = "pending" | "searching" | "done" | "failed";
 
@@ -406,6 +411,30 @@ export default function Page() {
             const providerStatus = data?.providerStatus ? String(data.providerStatus) : "";
             const msg = data?.error || "Enrichment failed.";
             throw new Error(providerStatus ? `${msg} (provider status: ${providerStatus})` : msg);
+          }
+
+          const jobIntegrity = validateWorkerResultForJob(job, data);
+          if (!jobIntegrity.accepted) {
+            setRows((prev) =>
+              prev.map((r) =>
+                r.source_row_id === job.source_row_id
+                  ? {
+                      ...r,
+                      status: "failed",
+                      error: "CROSS_BOUND_RESULT_REJECTED",
+                      error_code: "cross_bound_result_rejected",
+                      issues: [r.issues, ...jobIntegrity.issues].filter(Boolean).join(", "),
+                      needs_review: true,
+                      review_required: true,
+                      association_confidence: String(jobIntegrity.association_confidence),
+                      association_checks: JSON.stringify(jobIntegrity.association_checks),
+                      review_reason: jobIntegrity.review_reason,
+                      cross_binding_detected: jobIntegrity.cross_binding_detected,
+                    }
+                  : r
+              )
+            );
+            continue;
           }
 
           setRows((prev) =>

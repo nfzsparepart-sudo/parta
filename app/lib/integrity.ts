@@ -41,6 +41,14 @@ export type IntegrityResult = {
   cross_binding_detected: boolean;
 };
 
+export type WorkerJobIdentity = {
+  source_row_id: string;
+  source_excel_row: number;
+  source_sku_raw: string;
+  source_sku_normalized: string;
+  source_note_raw: string;
+};
+
 const PREFIX_PATTERN = /^(?:GG|JJ|FD)[-\s]+/i;
 
 export function createUuid(): string {
@@ -201,6 +209,39 @@ export function validateAssociation(
     association_checks,
     review_reason: issues.join(", "),
     cross_binding_detected,
+  };
+}
+
+export function validateWorkerResultForJob(
+  job: WorkerJobIdentity,
+  result: Record<string, unknown>
+): IntegrityResult {
+  const resultRowId = String(result.source_row_id ?? "");
+  const resultRawSku = String(result.source_sku_raw ?? result.sku ?? "");
+  const resultNormalizedSku = String(result.source_sku_normalized ?? normalizeSkuForAssociation(resultRawSku));
+  const resultNote = String(result.source_note_raw ?? "");
+  const resultExcelRow = Number(result.source_excel_row ?? 0);
+
+  const association_checks: AssociationChecks = {
+    row_id_match: resultRowId === job.source_row_id,
+    raw_sku_match: resultRawSku === job.source_sku_raw,
+    normalized_sku_match: resultNormalizedSku === job.source_sku_normalized,
+    note_preserved: resultNote === job.source_note_raw,
+    excel_row_preserved: resultExcelRow === job.source_excel_row,
+    category_match: true,
+    vehicle_match: true,
+    side_match: true,
+  };
+  const failedChecks = Object.values(association_checks).filter((passed) => !passed).length;
+  const issues = failedChecks ? ["CROSS_BOUND_RESULT_REJECTED"] : [];
+
+  return {
+    accepted: issues.length === 0,
+    issues,
+    association_confidence: Math.max(0, 100 - failedChecks * 20),
+    association_checks,
+    review_reason: issues.join(", "),
+    cross_binding_detected: issues.length > 0,
   };
 }
 
