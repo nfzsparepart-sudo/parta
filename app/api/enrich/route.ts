@@ -51,7 +51,9 @@ type EnrichedPart = {
   manufacturer_country: string;
   country: string;
   vehicle_brand: string;
+  vehicle_brand_ar: string;
   vehicle_model: string;
+  vehicle_model_ar: string;
   vehicle_year: string;
   image_url: string;
   image_format: string;
@@ -296,7 +298,9 @@ function cleanOutput(json: unknown, identity: SourceIdentity): EnrichedPart {
     manufacturer_country: normalizeUnknown(obj.manufacturer_country),
     country: normalizeUnknown(obj.country || obj.manufacturer_country),
     vehicle_brand: normalizeUnknown(obj.vehicle_brand),
+    vehicle_brand_ar: normalizeUnknown(obj.vehicle_brand_ar || obj.vehicle_brand),
     vehicle_model: normalizeUnknown(obj.vehicle_model),
+    vehicle_model_ar: normalizeUnknown(obj.vehicle_model_ar || obj.vehicle_model),
     vehicle_year: normalizeYear(obj.vehicle_year),
     image_url: "",
     image_format: "",
@@ -340,7 +344,9 @@ function cleanOutput(json: unknown, identity: SourceIdentity): EnrichedPart {
     "compatibility",
     "manufacturer_country",
     "vehicle_brand",
+    "vehicle_brand_ar",
     "vehicle_model",
+    "vehicle_model_ar",
     "vehicle_year",
     "weight_unit",
     "weight",
@@ -352,7 +358,9 @@ function cleanOutput(json: unknown, identity: SourceIdentity): EnrichedPart {
     notes.add("name_ar_colloquial is not Arabic");
   }
   if (cleaned.vehicle_brand !== "Unknown" && !hasArabic(cleaned.vehicle_brand)) notes.add("vehicle_brand is not Arabic");
+  if (cleaned.vehicle_brand_ar !== "Unknown" && !hasArabic(cleaned.vehicle_brand_ar)) notes.add("vehicle_brand_ar is not Arabic");
   if (cleaned.vehicle_model !== "Unknown" && !hasArabic(cleaned.vehicle_model)) notes.add("vehicle_model is not Arabic");
+  if (cleaned.vehicle_model_ar !== "Unknown" && !hasArabic(cleaned.vehicle_model_ar)) notes.add("vehicle_model_ar is not Arabic");
   if (!cleaned.source_urls) notes.add("no source URL returned");
   if (Number(cleaned.confidence) < MIN_REVIEW_CONFIDENCE) notes.add("low confidence");
   if (missingFields.length) notes.add(`missing: ${missingFields.join(", ")}`);
@@ -861,7 +869,9 @@ Return strict JSON with these keys only:
 - description
 - manufacturer_country
 - vehicle_brand
+- vehicle_brand_ar
 - vehicle_model
+- vehicle_model_ar
 - vehicle_year
 - weight_unit
 - weight
@@ -878,6 +888,7 @@ Rules:
 6) description: one short factual sentence.
 7) manufacturer_country: country where the part is manufactured (e.g., 'China', 'Japan'), otherwise 'Unknown'.
 8) vehicle_brand/model: return in Arabic script only (e.g., "تويوتا", "كامري"). If source is English, translate/transliterate to Arabic. If not discoverable, return "Unknown".
+8a) vehicle_brand_ar and vehicle_model_ar: same Arabic-script brand/model values, provided as explicit output columns.
 9) vehicle_year: model year or year range if discoverable, otherwise "Unknown".
 10) weight_unit: one of kg, g, lb, oz when known, otherwise "Unknown".
 11) weight: numeric value only when known, otherwise "Unknown".
@@ -934,7 +945,9 @@ Return strict JSON only with these keys:
   "manufacturer_country": "",
   "country": "",
   "vehicle_brand": "",
+  "vehicle_brand_ar": "",
   "vehicle_model": "",
+  "vehicle_model_ar": "",
   "vehicle_year": "",
   "weight_unit": "kg|g|lb|oz|Unknown",
   "weight": "",

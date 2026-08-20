@@ -29,7 +29,9 @@ type EnrichedPart = {
   manufacturer_country: string;
   country: string;
   vehicle_brand: string;
+  vehicle_brand_ar: string;
   vehicle_model: string;
+  vehicle_model_ar: string;
   vehicle_year: string;
   image_url: string;
   image_format: string;
@@ -85,7 +87,9 @@ const EMPTY_ENRICHED: Omit<EnrichedPart, "sku"> = {
   manufacturer_country: "",
   country: "",
   vehicle_brand: "",
+  vehicle_brand_ar: "",
   vehicle_model: "",
+  vehicle_model_ar: "",
   vehicle_year: "",
   image_url: "",
   image_format: "",
@@ -456,6 +460,8 @@ export default function Page() {
                     side: String(result?.side ?? ""),
                     superseded_by: String(result?.superseded_by ?? ""),
                     country: String(result?.country ?? result?.manufacturer_country ?? ""),
+                    vehicle_brand_ar: String(result?.vehicle_brand_ar ?? result?.vehicle_brand ?? ""),
+                    vehicle_model_ar: String(result?.vehicle_model_ar ?? result?.vehicle_model ?? ""),
                     image_url: String(result?.image_url ?? ""),
                     image_format: String(result?.image_format ?? ""),
                     image_status: String(result?.image_status ?? ""),
@@ -781,7 +787,9 @@ export default function Page() {
                   <th className="px-3 py-2">Superseded By</th>
                   <th className="px-3 py-2">Manufacturer Country</th>
                   <th className="px-3 py-2">Brand</th>
+                  <th className="px-3 py-2">Vehicle Brand AR</th>
                   <th className="px-3 py-2">Model</th>
+                  <th className="px-3 py-2">Vehicle Model AR</th>
                   <th className="px-3 py-2">Vehicle Year</th>
                   <th className="px-3 py-2">Image URL</th>
                   <th className="px-3 py-2">Image Format</th>
@@ -883,7 +891,13 @@ export default function Page() {
                       <input className="w-36 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.vehicle_brand} onChange={(e) => updateRowField(idx, "vehicle_brand", e.target.value)} />
                     </td>
                     <td className="px-3 py-2">
+                      <input className="w-36 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.vehicle_brand_ar} onChange={(e) => updateRowField(idx, "vehicle_brand_ar", e.target.value)} />
+                    </td>
+                    <td className="px-3 py-2">
                       <input className="w-36 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.vehicle_model} onChange={(e) => updateRowField(idx, "vehicle_model", e.target.value)} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input className="w-36 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.vehicle_model_ar} onChange={(e) => updateRowField(idx, "vehicle_model_ar", e.target.value)} />
                     </td>
                     <td className="px-3 py-2">
                       <input className="w-28 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.vehicle_year} onChange={(e) => updateRowField(idx, "vehicle_year", e.target.value)} />
@@ -904,7 +918,7 @@ export default function Page() {
                 ))}
                 {!rows.length ? (
                   <tr>
-                    <td colSpan={40} className="px-3 py-8 text-center text-red-300">
+                    <td colSpan={42} className="px-3 py-8 text-center text-red-300">
                       Upload a file to begin enrichment.
                     </td>
                   </tr>
