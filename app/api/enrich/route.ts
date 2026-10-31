@@ -864,7 +864,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const genAI = new GoogleGenAI({ apiKey: geminiApiKey });
+    const genAI = new GoogleGenAI({ apiKey: geminiApiKey, vertexai: false });
     const modelsToTry = Array.from(new Set([PRIMARY_MODEL, ...FALLBACK_MODELS]));
     const timeoutMs = parseEnvInt(process.env.GEMINI_TIMEOUT_MS, DEFAULT_GEMINI_TIMEOUT_MS);
     const maxRetries = parseEnvInt(process.env.GEMINI_MAX_RETRIES, DEFAULT_GEMINI_MAX_RETRIES, 0);
