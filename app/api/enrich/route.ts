@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GoogleGenAI, type GenerateContentParameters } from "@google/genai";
+import OpenAI from "openai";
+import { extractSearchUrls, enrichmentFormat, visionFormat } from "../../lib/openai";
 import * as XLSX from "xlsx";
 import path from "node:path";
 import fs from "node:fs";
@@ -12,15 +13,15 @@ import {
   type SourceIdentity,
 } from "../../lib/integrity";
 
-const PRIMARY_MODEL = process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash";
-const FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS ?? "gemini-3.5-flash-lite")
+const PRIMARY_MODEL = process.env.OPENAI_MODEL?.trim() || "gpt-5.4-mini";
+const FALLBACK_MODELS = (process.env.OPENAI_FALLBACK_MODELS ?? "")
   .split(",").map((name) => name.trim()).filter(Boolean);
-const VISION_MODEL = process.env.GEMINI_VISION_MODEL?.trim() || PRIMARY_MODEL;
+const VISION_MODEL = process.env.OPENAI_VISION_MODEL?.trim() || PRIMARY_MODEL;
 const SAUDI_DB_FILE = "saudidatabase.xlsx";
-const DEFAULT_GEMINI_TIMEOUT_MS = 25_000;
-const DEFAULT_GEMINI_MAX_RETRIES = 0;
-const DEFAULT_GEMINI_INITIAL_BACKOFF_MS = 1_000;
-const DEFAULT_GEMINI_MAX_BACKOFF_MS = 15_000;
+const DEFAULT_OPENAI_TIMEOUT_MS = 25_000;
+const DEFAULT_OPENAI_MAX_RETRIES = 0;
+const DEFAULT_OPENAI_INITIAL_BACKOFF_MS = 1_000;
+const DEFAULT_OPENAI_MAX_BACKOFF_MS = 15_000;
 const MIN_REVIEW_CONFIDENCE = 90;
 const MIN_IMAGE_SIZE = 500;
 const IMAGE_CANDIDATE_LIMIT = 5;
@@ -486,26 +487,6 @@ function extractJsonObject(raw: string): unknown {
   }
 }
 
-function extractGroundingUrls(result: unknown): string[] {
-  const candidates = (result as { candidates?: unknown[] })?.candidates;
-  if (!Array.isArray(candidates)) return [];
-
-  const urls = new Set<string>();
-  for (const candidate of candidates as Record<string, unknown>[]) {
-    const metadata = candidate.groundingMetadata as { groundingChunks?: unknown[] } | undefined;
-    const chunks = metadata?.groundingChunks;
-    if (!Array.isArray(chunks)) continue;
-
-    for (const chunk of chunks as Record<string, unknown>[]) {
-      const web = chunk.web as { uri?: unknown } | undefined;
-      const uri = cleanText(web?.uri);
-      if (uri) urls.add(uri);
-    }
-  }
-
-  return Array.from(urls).slice(0, 5);
-}
-
 async function fetchImageAsInlineData(url: string): Promise<{ mimeType: string; data: string; size: number } | null> {
   try {
     const res = await fetch(url, {
@@ -531,7 +512,7 @@ async function fetchImageAsInlineData(url: string): Promise<{ mimeType: string; 
 }
 
 async function reviewImageCandidate(
-  genAI: GoogleGenAI,
+  client: OpenAI,
   candidate: ImageCandidate,
   context: EnrichedPart,
   timeoutMs: number
@@ -576,36 +557,18 @@ Return strict JSON only:
 `;
 
   try {
-    const result = await withTimeout(
-      genAI.models.generateContent({
-        model: VISION_MODEL,
-        config: {
-          httpOptions: { timeout: timeoutMs, retryOptions: { attempts: 1 } },
-          responseMimeType: "application/json",
-          responseJsonSchema: {
-            type: "object",
-            properties: {
-              match_confidence: { type: "number", minimum: 0, maximum: 100 },
-              rejected: { type: "boolean" },
-              issues: { type: "array", items: { type: "string" } },
-              notes: { type: "string" },
-            },
-            required: ["match_confidence", "rejected", "issues", "notes"],
-          },
-        },
-        contents: [
-        { text: prompt },
-        {
-          inlineData: {
-            mimeType: inlineData.mimeType,
-            data: inlineData.data,
-          },
-        },
-        ],
-      }),
-      timeoutMs
-    );
-    const parsed = extractJsonObject(result.text || "") as Record<string, unknown>;
+    const result = await client.responses.create({
+      model: VISION_MODEL,
+      store: false,
+      input: [{ role: "user", content: [
+        { type: "input_text", text: prompt },
+        { type: "input_image", image_url: `data:${inlineData.mimeType};base64,${inlineData.data}`, detail: "auto" },
+      ] }],
+      text: { format: visionFormat },
+      max_output_tokens: 1000,
+    }, { timeout: timeoutMs });
+    if (result.status !== "completed") throw new Error("OpenAI image review did not complete.");
+    const parsed = extractJsonObject(result.output_text) as Record<string, unknown>;
     const visionIssues = normalizeStringList(parsed.issues).map(normalizeIssue);
     return {
       image_url: candidate.image_url,
@@ -623,13 +586,13 @@ Return strict JSON only:
       image_confidence: Math.max(20, candidate.source_reliability - 30),
       rejected: true,
       issues: mergeIssues(issues, ["VISION_REVIEW_FAILED"], rateLimited ? ["VISION_RATE_LIMITED"] : []),
-      notes: rateLimited ? "Image review hit Gemini quota. Text enrichment was retained; image needs review." : "Vision review failed for candidate image.",
+      notes: rateLimited ? "Image review hit OpenAI quota. Text enrichment was retained; image needs review." : "Vision review failed for candidate image.",
     };
   }
 }
 
 async function selectValidatedImage(
-  genAI: GoogleGenAI,
+  client: OpenAI,
   candidates: ImageCandidate[],
   context: EnrichedPart,
   timeoutMs: number
@@ -647,7 +610,7 @@ async function selectValidatedImage(
 
   const reviews: VisionReview[] = [];
   for (const candidate of candidates.slice(0, IMAGE_CANDIDATE_LIMIT)) {
-    const review = await reviewImageCandidate(genAI, candidate, context, timeoutMs);
+    const review = await reviewImageCandidate(client, candidate, context, timeoutMs);
     reviews.push(review);
     if (review.issues.includes("VISION_RATE_LIMITED")) break;
     // Avoid reviewing four more images after finding a good catalog match.
@@ -681,6 +644,12 @@ function formatProviderError(error: unknown): { message: string; status: number 
   const status = typeof anyErr?.status === "number" && anyErr.status >= 400 ? anyErr.status : 500;
   const lower = rawMessage.toLowerCase();
 
+  const providerCode = (error as { code?: string })?.code;
+  if (providerCode === "insufficient_quota") return {
+    status: 429,
+    message: "OpenAI API credits or spending quota are exhausted. Add API billing credits or adjust the project budget at https://platform.openai.com/settings/organization/billing/overview. Processing paused.",
+  };
+  if (status === 401) return { status: 401, message: "OpenAI rejected the API key. Update OPENAI_API_KEY in Vercel Production and redeploy." };
   if (
     status === 429 ||
     lower.includes("429") ||
@@ -690,7 +659,7 @@ function formatProviderError(error: unknown): { message: string; status: number 
     return {
       status: 429,
       message:
-        "Gemini quota/rate limit reached (429). Processing paused to avoid more failed requests. Check this project's active model and Google Search limits and billing at https://ai.dev/rate-limit. Retry after the limit resets; daily or zero quota cannot be fixed by immediate retries.",
+        "OpenAI quota/rate limit reached (429). Processing paused to avoid more failed requests. Check this project's OpenAI usage limits, API credit balance, and billing at https://platform.openai.com/settings/organization/limits. Retry after the limit resets; daily or zero quota cannot be fixed by immediate retries.",
     };
   }
 
@@ -703,30 +672,13 @@ function formatProviderError(error: unknown): { message: string; status: number 
     return {
       status: 503,
       message:
-        "Gemini is temporarily overloaded (503 high demand). The app retried automatically and tried fallback models. Retry the failed rows in a few minutes or lower NEXT_PUBLIC_MAX_CONCURRENT_GEMINI.",
+        "OpenAI is temporarily overloaded (503 high demand). Retry when capacity is available. Retry the failed rows in a few minutes or lower NEXT_PUBLIC_MAX_CONCURRENT_OPENAI.",
     };
   }
 
   return { message: rawMessage, status };
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const id = setTimeout(() => {
-      reject(new Error(`Gemini request timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    promise
-      .then((value) => {
-        clearTimeout(id);
-        resolve(value);
-      })
-      .catch((error) => {
-        clearTimeout(id);
-        reject(error);
-      });
-  });
-}
 
 let saudiColloquialMapCache: Map<string, string> | null = null;
 
@@ -850,29 +802,29 @@ export async function POST(req: NextRequest) {
       importBatchId,
     });
     const sku = identity.source_sku_raw;
-    const geminiApiKey = String(process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "").trim();
+    const openaiApiKey = String(process.env.OPENAI_API_KEY ?? "").trim();
     const serpApiKey = String(process.env.SERPAPI_API_KEY ?? "").trim();
 
     if (!sourceSkuRaw) {
       return NextResponse.json({ error: "Missing 'sku' in request body." }, { status: 400 });
     }
 
-    if (!geminiApiKey) {
+    if (!openaiApiKey) {
       return NextResponse.json(
-        { error: "Missing Gemini API key. Set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env.local / Vercel env." },
+        { error: "Missing OpenAI API key. Set OPENAI_API_KEY in Vercel Production environment variables, then redeploy." },
         { status: 500 }
       );
     }
 
-    const genAI = new GoogleGenAI({ apiKey: geminiApiKey, vertexai: false });
+    const client = new OpenAI({ apiKey: openaiApiKey, maxRetries: 0 });
     const modelsToTry = Array.from(new Set([PRIMARY_MODEL, ...FALLBACK_MODELS]));
-    const timeoutMs = parseEnvInt(process.env.GEMINI_TIMEOUT_MS, DEFAULT_GEMINI_TIMEOUT_MS);
-    const maxRetries = parseEnvInt(process.env.GEMINI_MAX_RETRIES, DEFAULT_GEMINI_MAX_RETRIES, 0);
+    const timeoutMs = parseEnvInt(process.env.OPENAI_TIMEOUT_MS, DEFAULT_OPENAI_TIMEOUT_MS);
+    const maxRetries = parseEnvInt(process.env.OPENAI_MAX_RETRIES, DEFAULT_OPENAI_MAX_RETRIES, 0);
     const initialBackoffMs = parseEnvInt(
-      process.env.GEMINI_INITIAL_BACKOFF_MS,
-      DEFAULT_GEMINI_INITIAL_BACKOFF_MS
+      process.env.OPENAI_INITIAL_BACKOFF_MS,
+      DEFAULT_OPENAI_INITIAL_BACKOFF_MS
     );
-    const maxBackoffMs = parseEnvInt(process.env.GEMINI_MAX_BACKOFF_MS, DEFAULT_GEMINI_MAX_BACKOFF_MS);
+    const maxBackoffMs = parseEnvInt(process.env.OPENAI_MAX_BACKOFF_MS, DEFAULT_OPENAI_MAX_BACKOFF_MS);
 
     const trustedSourceText = TRUSTED_SOURCES.map(
       (source) => `${source.name} (${source.domain}, reliability ${source.weight})`
@@ -955,21 +907,22 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
     let sourceUrls: string[] = [];
 
     for (const modelName of modelsToTry) {
-      const requestPayload: GenerateContentParameters = {
-        model: modelName,
-        contents: [{ role: "user", parts: [{ text: validationPrompt }] }],
-        config: {
-          httpOptions: { timeout: timeoutMs, retryOptions: { attempts: 1 } },
-          tools: [{ googleSearch: {} }],
-        },
-      };
-
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-          const result = await withTimeout(genAI.models.generateContent(requestPayload), timeoutMs);
-          raw = result.text || "";
-          sourceUrls = extractGroundingUrls(result);
-          if (!raw.trim()) throw new Error("Gemini returned empty response text.");
+          const result = await client.responses.create({
+            model: modelName,
+            store: false,
+            input: validationPrompt,
+            tools: [{ type: "web_search" }],
+            tool_choice: "required",
+            include: ["web_search_call.action.sources"],
+            text: { format: enrichmentFormat },
+            max_output_tokens: 5000,
+          }, { timeout: timeoutMs });
+          if (result.status !== "completed") throw new Error("OpenAI research did not complete. Retry this row.");
+          raw = result.output_text;
+          sourceUrls = extractSearchUrls(result);
+          if (!raw.trim()) throw new Error("OpenAI returned empty response text.");
           // A malformed response must not prevent trying the next model.
           extractJsonObject(raw);
           break;
@@ -988,7 +941,7 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
 
           const capped = Math.min(initialBackoffMs * 2 ** attempt, maxBackoffMs);
           const providerDelay = providerRetryDelayMs(e);
-          // Do not retry sooner than Google asks or hold this HTTP request open indefinitely.
+          // Do not retry sooner than the provider asks or hold this HTTP request open indefinitely.
           if (providerDelay !== undefined && providerDelay > maxBackoffMs) break;
           const jitter = Math.floor(Math.random() * 500);
           totalRetriesUsed += 1;
@@ -999,7 +952,7 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
     }
 
     if (!raw.trim()) {
-      throw lastError || new Error(`No response generated from available Gemini models: ${modelsToTry.join(", ")}`);
+      throw lastError || new Error(`No response generated from available OpenAI models: ${modelsToTry.join(", ")}`);
     }
 
     const parsed = extractJsonObject(raw);
@@ -1037,7 +990,7 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
           issues: ["MISSING_IMAGE"],
           notes: "Reviewer note says no image is expected and no verified image candidate was found.",
         }
-      : await selectValidatedImage(genAI, imageCandidates, {
+      : await selectValidatedImage(client, imageCandidates, {
           ...cleaned,
           name_ar_colloquial: resolvedColloquial,
         }, timeoutMs);
@@ -1144,7 +1097,7 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
       retryCount: totalRetriesUsed,
     });
   } catch (error) {
-    console.error("/api/enrich error:", error);
+    console.error("/api/enrich provider error:", { status: (error as { status?: number })?.status, code: (error as { code?: string })?.code });
     const anyErr = error as {
       message?: string;
       status?: number;

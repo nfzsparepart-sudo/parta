@@ -5,8 +5,19 @@ export function shouldRetryProvider(status: number | undefined, message: string)
   return (status !== undefined && status >= 500 && status <= 599) || /timed out/i.test(message);
 }
 
-// Google SDK errors can carry RetryInfo inside their JSON message.
+// OpenAI supplies Retry-After headers; older provider errors may carry RetryInfo.
 export function providerRetryDelayMs(error: unknown): number | undefined {
+  const headers = (error as { headers?: { get?: (name: string) => string | null } } | null)?.headers;
+  const retryMs = headers?.get?.("retry-after-ms");
+  if (retryMs !== null && retryMs !== undefined && retryMs.trim() && Number.isFinite(Number(retryMs)) && Number(retryMs) >= 0)
+    return Math.ceil(Number(retryMs));
+  const retryAfter = headers?.get?.("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+    const timestamp = Date.parse(retryAfter);
+    if (Number.isFinite(timestamp)) return Math.max(0, timestamp - Date.now());
+  }
   const value = error as { message?: string; errorDetails?: unknown[] } | null;
   let details = value?.errorDetails;
   if (!Array.isArray(details)) {

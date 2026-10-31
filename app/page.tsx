@@ -130,7 +130,7 @@ const STATUS_STYLES: Record<RowStatus, string> = {
   failed: "bg-black text-red-300",
 };
 
-const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_GEMINI ?? "1") || 1);
+const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_OPENAI ?? "1") || 1);
 const PRICE_COLUMN_CANDIDATES = ["price", "part_price", "unit_price", "selling_price", "cost", "amount"];
 const NOTE_COLUMN_CANDIDATES = ["reviewer note", "reviewer_note", "note", "notes", "al", "ملاحظة", "ملاحظات"];
 
@@ -654,7 +654,7 @@ export default function Page() {
       <div className="mx-auto max-w-7xl space-y-6">
         <header className="space-y-2">
           <h1 className="text-3xl font-bold tracking-tight text-red-100">Nefzalik</h1>
-          <p className="text-red-200">Upload SKUs, enrich live with Gemini, and export a fresh Excel file.</p>
+          <p className="text-red-200">Upload SKUs, enrich live with OpenAI, and export a fresh Excel file.</p>
         </header>
 
         <section
@@ -854,7 +854,13 @@ export default function Page() {
                       <div className="w-72 whitespace-pre-wrap">{row.quality_notes || ""}</div>
                     </td>
                     <td className="px-3 py-2 text-xs text-red-200">
-                      <div className="w-80 whitespace-pre-wrap break-words">{row.source_urls || ""}</div>
+                      <div className="w-80 space-y-1 break-words">
+                        {(row.source_urls || "").split("|").map((value) => value.trim()).filter(Boolean).map((url) =>
+                          /^https?:\/\//i.test(url)
+                            ? <a key={url} href={url} target="_blank" rel="noopener noreferrer" className="block underline">{url}</a>
+                            : <span key={url} className="block">{url}</span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-3 py-2">
                       <input className="w-36 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-red-100" value={row.manufacturer} onChange={(e) => updateRowField(idx, "manufacturer", e.target.value)} />
