@@ -12,8 +12,10 @@ Uses `@google/genai`. `GEMINI_MODEL` defaults to `gemini-3.8-flash`. `GEMINI_FAL
 
 Enrichment retries transient failures and tries fallback models on failure or malformed JSON. Image review uses a JSON schema; failed reviews require human review. Source reliability comes from application-assigned hostname weights, with each trusted source counted once. This measures source coverage and does not prove individual field accuracy.
 
-`NEXT_PUBLIC_MAX_CONCURRENT_GEMINI` controls concurrent rows (default 2). Each row can make one enrichment call plus up to five sequential image reviews, with additional enrichment retries. Lower concurrency for quota errors. `GEMINI_TIMEOUT_MS` applies per generation, not per row. Restart after changing settings; rebuild deployments after changing public variables.
+`NEXT_PUBLIC_MAX_CONCURRENT_GEMINI` controls concurrent rows (default 1). Each row can make one enrichment call plus up to five sequential image reviews (stopping early at an accepted image confidence of 90 or higher), with additional enrichment retries. Lower concurrency for quota errors. `GEMINI_TIMEOUT_MS` applies per generation, not per row. Restart after changing settings; rebuild deployments after changing public variables.
 
 ## Validation
 
 Run `npm test`, `npx tsc --noEmit`, and `npm run build`. Live generation requires a valid API key, model access, and quota. Check real catalog output against known OEM records before bulk use.
+
+On a final enrichment 429, the browser stops scheduling new rows and leaves unstarted rows unchanged. Retry delays from Google are respected up to GEMINI_MAX_BACKOFF_MS; longer waits move to the next fallback model rather than retrying too early. Already running rows can finish. This does not increase provider quota. Review project/model and Search limits in AI Studio, then run the remaining rows after capacity is available.

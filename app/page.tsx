@@ -130,7 +130,7 @@ const STATUS_STYLES: Record<RowStatus, string> = {
   failed: "bg-black text-red-300",
 };
 
-const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_GEMINI ?? "2") || 2);
+const MAX_CONCURRENT_REQUESTS = Math.max(1, Number(process.env.NEXT_PUBLIC_MAX_CONCURRENT_GEMINI ?? "1") || 1);
 const PRICE_COLUMN_CANDIDATES = ["price", "part_price", "unit_price", "selling_price", "cost", "amount"];
 const NOTE_COLUMN_CANDIDATES = ["reviewer note", "reviewer_note", "note", "notes", "al", "ملاحظة", "ملاحظات"];
 
@@ -412,8 +412,10 @@ export default function Page() {
           const data = await res.json();
 
           if (!res.ok) {
+            if (res.status === 429) stopRequestedRef.current = true;
             const providerStatus = data?.providerStatus ? String(data.providerStatus) : "";
-            const msg = data?.error || "Enrichment failed.";
+            const wait = Number(data?.retryAfterSeconds);
+            const msg = (data?.error || "Enrichment failed.") + (wait > 0 ? ` Provider requested a wait of ${wait} seconds.` : "");
             throw new Error(providerStatus ? `${msg} (provider status: ${providerStatus})` : msg);
           }
 

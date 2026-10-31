@@ -3,6 +3,7 @@ import { GoogleGenAI, type GenerateContentParameters } from "@google/genai";
 import * as XLSX from "xlsx";
 import path from "node:path";
 import fs from "node:fs";
+import { providerRetryDelayMs } from "../../lib/quota";
 import {
   createSourceIdentity,
   normalizeSkuForAssociation,
@@ -614,14 +615,15 @@ Return strict JSON only:
       issues: mergeIssues(issues, visionIssues),
       notes: cleanText(parsed.notes),
     };
-  } catch {
+  } catch (error) {
+    const rateLimited = (error as { status?: number })?.status === 429;
     return {
       image_url: candidate.image_url,
       image_format: candidate.image_format,
       image_confidence: Math.max(20, candidate.source_reliability - 30),
       rejected: true,
-      issues: mergeIssues(issues, ["VISION_REVIEW_FAILED"]),
-      notes: "Vision review failed for candidate image.",
+      issues: mergeIssues(issues, ["VISION_REVIEW_FAILED"], rateLimited ? ["VISION_RATE_LIMITED"] : []),
+      notes: rateLimited ? "Image review hit Gemini quota. Text enrichment was retained; image needs review." : "Vision review failed for candidate image.",
     };
   }
 }
@@ -645,7 +647,11 @@ async function selectValidatedImage(
 
   const reviews: VisionReview[] = [];
   for (const candidate of candidates.slice(0, IMAGE_CANDIDATE_LIMIT)) {
-    reviews.push(await reviewImageCandidate(genAI, candidate, context, timeoutMs));
+    const review = await reviewImageCandidate(genAI, candidate, context, timeoutMs);
+    reviews.push(review);
+    if (review.issues.includes("VISION_RATE_LIMITED")) break;
+    // Avoid reviewing four more images after finding a good catalog match.
+    if (!review.rejected && review.image_confidence >= 90) return review;
   }
 
   const accepted = reviews
@@ -690,7 +696,7 @@ function formatProviderError(error: unknown): { message: string; status: number 
     return {
       status: 429,
       message:
-        "Gemini quota/rate limit reached (429). The app retried automatically but no capacity was available. Check plan/billing and quota usage at https://ai.dev/rate-limit and https://ai.google.dev/gemini-api/docs/rate-limits, then retry.",
+        "Gemini quota/rate limit reached (429). Processing paused to avoid more failed requests. Check this project's active model and Google Search limits and billing at https://ai.dev/rate-limit. Retry after the limit resets; daily or zero quota cannot be fixed by immediate retries.",
     };
   }
 
@@ -987,9 +993,12 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
           if (!retryable || attempt === maxRetries) break;
 
           const capped = Math.min(initialBackoffMs * 2 ** attempt, maxBackoffMs);
+          const providerDelay = providerRetryDelayMs(e);
+          // Do not retry sooner than Google asks or hold this HTTP request open indefinitely.
+          if (providerDelay !== undefined && providerDelay > maxBackoffMs) break;
           const jitter = Math.floor(Math.random() * 500);
           totalRetriesUsed += 1;
-          await sleep(capped + jitter);
+          await sleep(Math.max(capped, providerDelay ?? 0) + jitter);
         }
       }
       if (raw.trim()) break;
@@ -1149,15 +1158,20 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
       errorDetails?: unknown;
     };
     const normalized = formatProviderError(error);
+    const retryDelayMs = providerRetryDelayMs(error);
 
     return NextResponse.json(
       {
         error: normalized.message,
-        providerStatus: anyErr?.status || null,
+        providerStatus: anyErr?.status || normalized.status,
+        retryAfterSeconds: retryDelayMs === undefined ? null : Math.ceil(retryDelayMs / 1000),
         providerStatusText: anyErr?.statusText || null,
         providerDetails: anyErr?.errorDetails || null,
       },
-      { status: normalized.status }
+      {
+        status: normalized.status,
+        headers: retryDelayMs === undefined ? undefined : { "Retry-After": String(Math.ceil(retryDelayMs / 1000)) },
+      }
     );
   }
 }
