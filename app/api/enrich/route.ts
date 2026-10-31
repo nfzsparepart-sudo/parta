@@ -3,7 +3,7 @@ import { GoogleGenAI, type GenerateContentParameters } from "@google/genai";
 import * as XLSX from "xlsx";
 import path from "node:path";
 import fs from "node:fs";
-import { providerRetryDelayMs } from "../../lib/quota";
+import { providerRetryDelayMs, shouldRetryProvider } from "../../lib/quota";
 import {
   createSourceIdentity,
   normalizeSkuForAssociation,
@@ -17,8 +17,8 @@ const FALLBACK_MODELS = (process.env.GEMINI_FALLBACK_MODELS ?? "gemini-3.5-flash
   .split(",").map((name) => name.trim()).filter(Boolean);
 const VISION_MODEL = process.env.GEMINI_VISION_MODEL?.trim() || PRIMARY_MODEL;
 const SAUDI_DB_FILE = "saudidatabase.xlsx";
-const DEFAULT_GEMINI_TIMEOUT_MS = 45_000;
-const DEFAULT_GEMINI_MAX_RETRIES = 4;
+const DEFAULT_GEMINI_TIMEOUT_MS = 25_000;
+const DEFAULT_GEMINI_MAX_RETRIES = 0;
 const DEFAULT_GEMINI_INITIAL_BACKOFF_MS = 1_000;
 const DEFAULT_GEMINI_MAX_BACKOFF_MS = 15_000;
 const MIN_REVIEW_CONFIDENCE = 90;
@@ -580,7 +580,7 @@ Return strict JSON only:
       genAI.models.generateContent({
         model: VISION_MODEL,
         config: {
-          httpOptions: { timeout: timeoutMs },
+          httpOptions: { timeout: timeoutMs, retryOptions: { attempts: 1 } },
           responseMimeType: "application/json",
           responseJsonSchema: {
             type: "object",
@@ -669,12 +669,6 @@ function parseEnvInt(value: string | undefined, fallback: number, min = 1): numb
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.floor(n));
-}
-
-function isRetryableStatus(status: number | undefined): boolean {
-  if (!status) return false;
-  if (status === 429 || status === 503) return true;
-  return status >= 500 && status <= 599;
 }
 
 function formatProviderError(error: unknown): { message: string; status: number } {
@@ -873,7 +867,7 @@ export async function POST(req: NextRequest) {
     const genAI = new GoogleGenAI({ apiKey: geminiApiKey });
     const modelsToTry = Array.from(new Set([PRIMARY_MODEL, ...FALLBACK_MODELS]));
     const timeoutMs = parseEnvInt(process.env.GEMINI_TIMEOUT_MS, DEFAULT_GEMINI_TIMEOUT_MS);
-    const maxRetries = parseEnvInt(process.env.GEMINI_MAX_RETRIES, DEFAULT_GEMINI_MAX_RETRIES);
+    const maxRetries = parseEnvInt(process.env.GEMINI_MAX_RETRIES, DEFAULT_GEMINI_MAX_RETRIES, 0);
     const initialBackoffMs = parseEnvInt(
       process.env.GEMINI_INITIAL_BACKOFF_MS,
       DEFAULT_GEMINI_INITIAL_BACKOFF_MS
@@ -965,7 +959,7 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
         model: modelName,
         contents: [{ role: "user", parts: [{ text: validationPrompt }] }],
         config: {
-          httpOptions: { timeout: timeoutMs },
+          httpOptions: { timeout: timeoutMs, retryOptions: { attempts: 1 } },
           tools: [{ googleSearch: {} }],
         },
       };
@@ -987,7 +981,7 @@ Confidence scoring must be 0-100 and based on source agreement, compatibility ag
             message.includes("no longer available to new users") ||
             message.includes("not found") ||
             message.includes("404");
-          const retryable = isRetryableStatus(status) || message.includes("timed out");
+          const retryable = shouldRetryProvider(status, message);
 
           if (!isDeprecatedModelError) lastError = e;
           if (!retryable || attempt === maxRetries) break;

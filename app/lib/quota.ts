@@ -1,3 +1,10 @@
+export function shouldRetryProvider(status: number | undefined, message: string): boolean {
+  // Quota, access, and credential errors need a fallback or user action, not a retry loop.
+  if (status === 429 || /429|resource_exhausted|too many requests/i.test(message)) return false;
+  if (status !== undefined && status >= 400 && status < 500) return false;
+  return (status !== undefined && status >= 500 && status <= 599) || /timed out/i.test(message);
+}
+
 // Google SDK errors can carry RetryInfo inside their JSON message.
 export function providerRetryDelayMs(error: unknown): number | undefined {
   const value = error as { message?: string; errorDetails?: unknown[] } | null;

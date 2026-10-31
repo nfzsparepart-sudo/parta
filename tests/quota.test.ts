@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { providerRetryDelayMs } from "../app/lib/quota.ts";
+import { providerRetryDelayMs, shouldRetryProvider } from "../app/lib/quota.ts";
+
+test("quota failures never enter the same-model retry loop", () => {
+  assert.equal(shouldRetryProvider(429, "quota reached"), false);
+  assert.equal(shouldRetryProvider(undefined, "429 RESOURCE_EXHAUSTED"), false);
+  assert.equal(shouldRetryProvider(403, "access denied"), false);
+  assert.equal(shouldRetryProvider(503, "overloaded"), true);
+  assert.equal(shouldRetryProvider(undefined, "Gemini request timed out"), true);
+});
 
 test("extracts Google's fractional retry delay from SDK JSON messages", () => {
   const message = JSON.stringify({ error: { details: [
